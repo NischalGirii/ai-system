@@ -1,0 +1,17 @@
+﻿.venv/
+venv/
+__pycache__/
+*.pyc
+data/chroma_db/
+data/*.pkl
+.cache/
+model/
+models/
+*.gguf
+*.bin
+*.h5
+*.safetensors
+*.pt
+*.pth
+*.onnx
+.env
