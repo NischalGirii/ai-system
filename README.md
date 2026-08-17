@@ -1,6 +1,4 @@
 
-
-```markdown
 # 🎙️ Nepali Information Service (Voice-to-Voice RAG Assistant)
 
 An interactive, ultra-low-latency Voice-to-Voice AI Assistant built with **Streamlit**, **Hybrid RAG** (ChromaDB + BM25), and **Groq**. Designed to process and answer user queries from custom local Nepali text documents through a simulated telephone call interface.
