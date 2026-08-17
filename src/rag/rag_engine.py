@@ -1,3 +1,8 @@
+# =========================================================
+# src/rag/rag_engine.py
+# Generic Multi-Person Voice RAG Information Service
+# =========================================================
+
 import os
 import time
 import pickle
@@ -7,12 +12,15 @@ import unicodedata
 import re
 from concurrent.futures import ThreadPoolExecutor
 
+from dotenv import load_dotenv
 import streamlit as st
 
 
 # =========================================================
 # ENVIRONMENT
 # =========================================================
+
+load_dotenv()
 
 os.environ["TRANSFORMERS_VERBOSITY"] = "error"
 os.environ["HF_HUB_OFFLINE"] = "1"
@@ -43,27 +51,28 @@ from groq import Groq
 PERSIST_DIR = "data/chroma_db"
 BM25_PKL_PATH = "data/bm25_retriever.pkl"
 
-# IMPORTANT:
-# This must be the SAME model that was used to build Chroma.
+# Must be the same model used to create Chroma.
 EMBEDDING_MODEL = (
     "sentence-transformers/"
     "paraphrase-multilingual-MiniLM-L12-v2"
 )
 
-GROQ_MODEL = "llama-3.1-8b-instant"
+# Groq generation model.
+GROQ_MODEL = "openai/gpt-oss-20b"
 
-# Retrieval candidates.
+# GPT-OSS reasoning.
+GROQ_REASONING_EFFORT = "low"
+
+# Retrieval.
 VECTOR_K = 6
 BM25_K = 6
 
-# Final context chunks sent to Groq.
-FINAL_CONTEXT_CHUNKS = 5
+# Context.
+FINAL_CONTEXT_CHUNKS = 6
+MAX_CONTEXT_CHARS = 10000
 
-# Maximum context size.
-MAX_CONTEXT_CHARS = 9000
-
-# Maximum generated answer size.
-MAX_RESPONSE_TOKENS = 120
+# Enough room to finish answers.
+MAX_COMPLETION_TOKENS = 512
 
 
 # =========================================================
@@ -78,6 +87,10 @@ DATABASE_ERROR = (
     "माफ गर्नुहोस्, अहिले जानकारी प्रणालीमा समस्या देखिएको छ।"
 )
 
+GROQ_UNAVAILABLE = (
+    "माफ गर्नुहोस्, अहिले सूचना सेवा उपलब्ध छैन।"
+)
+
 SERVER_ERROR = (
     "माफ गर्नुहोस्, अहिले सर्भरमा समस्या देखिएको छ।"
 )
@@ -85,61 +98,6 @@ SERVER_ERROR = (
 GOODBYE_RESPONSE = (
     "धन्यवाद। फेरि भेटौँला।"
 )
-
-
-# =========================================================
-# KNOWLEDGE DOMAIN
-# =========================================================
-#
-# This assistant is currently a CLOSED-DOMAIN biography
-# assistant about one person.
-#
-# The important distinction is:
-#
-#   "Is the question about Arjun?"
-#
-# NOT:
-#
-#   "Do the exact words of the question occur in a chunk?"
-#
-# This is what prevents:
-#
-#   "Which is the tallest mountain in Nepal?"
-#
-# from being answered with the model's outside knowledge.
-# =========================================================
-
-ENTITY_ALIASES = {
-    # English / Romanized
-    "arjun sharma": "अर्जुन शर्मा",
-    "arjun": "अर्जुन शर्मा",
-
-    # Nepali
-    "अर्जुन शर्मा": "अर्जुन शर्मा",
-    "अर्जुन": "अर्जुन शर्मा",
-}
-
-
-# Words that indicate the user is referring back to the
-# already-known person.
-PERSON_REFERENCE_WORDS = {
-    "उनी",
-    "उहाँ",
-    "उनको",
-    "उनका",
-    "उनकी",
-    "उनले",
-    "उहाँको",
-    "उहाँका",
-    "उहाँकी",
-    "अर्जुनको",
-    "अर्जुनका",
-    "अर्जुनकी",
-    "अर्जुनले",
-    "अर्जुनलाई",
-    "अर्जुनसँग",
-    "अर्जुनबाट",
-}
 
 
 # =========================================================
@@ -156,6 +114,7 @@ EXIT_PHRASES = {
     "see you later",
     "thanks",
     "thank you",
+    "thank you very much",
     "thanks for the conversation",
     "thank you for the conversation",
     "thanks for talking to me",
@@ -178,13 +137,151 @@ EXIT_PHRASES = {
 
 
 # =========================================================
-# NORMALIZATION
+# DISCOVERY PHRASES
+# =========================================================
+
+DISCOVERY_PHRASES = {
+    # English
+    "whose information",
+    "whose information do you have",
+    "who do you know",
+    "do you know anyone",
+    "do you have anyone",
+    "who are available",
+    "who is available",
+    "who are there",
+    "who is there",
+    "who do we have",
+    "what people do you know",
+    "which people do you know",
+
+    # Nepali
+    "कसको जानकारी",
+    "कसको बारेमा जानकारी",
+    "कसको बारेमा थाहा",
+    "कसको जानकारी छ",
+    "कस-कसको जानकारी",
+    "कसको बारेमा",
+    "कसको विवरण",
+    "को को हुनुहुन्छ",
+    "को को छन्",
+    "को-को हुनुहुन्छ",
+    "कस-कसको",
+    "को को",
+    "हाम्रोमा को",
+    "हाम्रोमा कसको",
+    "हाम्रोमा को-को",
+
+    # STT variants
+    "तपाईंलाई",
+    "तपाईलाई",
+    "तपाईँलाई",
+    "तपाईं लाई",
+    "तपाई लाई",
+    "तपाईँ लाई",
+    "tapai lai",
+    "tapailai",
+}
+
+
+# =========================================================
+# SERVICE PERSPECTIVE TERMS
+# =========================================================
+
+SERVICE_PERSPECTIVE_TERMS = {
+    "तपाईंलाई",
+    "तपाईलाई",
+    "तपाईँलाई",
+    "तपाईं लाई",
+    "तपाई लाई",
+    "तपाईँ लाई",
+
+    "tapai lai",
+    "tapailai",
+}
+
+
+# =========================================================
+# TECHNICAL DISCOVERY TERMS
+# =========================================================
+
+TECHNICAL_TERMS = {
+    "technical",
+    "technician",
+    "engineer",
+    "engineering",
+    "developer",
+    "software",
+    "programmer",
+    "technology",
+    "tech",
+    "it",
+    "ai",
+    "technical person",
+
+    "प्राविधिक",
+    "इन्जिनियर",
+    "इन्जिनियरिङ",
+    "सफ्टवेयर",
+    "डेभलपर",
+    "प्रोग्रामर",
+    "प्रविधि",
+    "प्राविधिक व्यक्ति",
+    "आईटी",
+    "कम्प्युटर",
+}
+
+
+# =========================================================
+# PERSON REFERENCE WORDS
+# =========================================================
+
+PERSON_PRONOUNS = {
+    "उनी",
+    "उहाँ",
+    "उनको",
+    "उनका",
+    "उनकी",
+    "उनले",
+    "उनलाई",
+    "उहाँको",
+    "उहाँका",
+    "उहाँकी",
+    "उहाँले",
+    "उहाँलाई",
+
+    "his",
+    "her",
+    "their",
+    "he",
+    "she",
+    "they",
+}
+
+
+# =========================================================
+# SESSION MEMORY
+# =========================================================
+
+def get_current_person():
+    return st.session_state.get(
+        "current_person",
+        None,
+    )
+
+
+def set_current_person(name):
+    if name:
+        st.session_state.current_person = name
+    else:
+        st.session_state.current_person = None
+
+
+# =========================================================
+# TEXT NORMALIZATION
 # =========================================================
 
 def normalize_text(text: str) -> str:
-    """
-    Unicode normalization + whitespace cleanup.
-    """
 
     if not text:
         return ""
@@ -203,67 +300,230 @@ def normalize_text(text: str) -> str:
     return text.strip()
 
 
-# Keep old function name available if other files import it.
 normalize_nepali = normalize_text
 
 
 # =========================================================
-# EXIT INTENT
+# EXIT DETECTION
 # =========================================================
 
 def is_exit_intent(query: str) -> bool:
-    """
-    Detect conversation-ending phrases.
-    """
 
-    query = normalize_text(query).lower()
+    q = normalize_text(query).lower()
 
-    if not query:
+    if not q:
         return False
 
-    if query in EXIT_PHRASES:
+    if q in EXIT_PHRASES:
         return True
 
     for phrase in EXIT_PHRASES:
-        if phrase in query:
+        if phrase in q:
             return True
 
     return False
 
 
 # =========================================================
-# ENTITY QUERY EXPANSION
+# SERVICE-PERSPECTIVE QUESTION
 # =========================================================
 
-def expand_entity_query(query: str) -> str:
-    """
-    Add the Nepali canonical entity form when the user
-    speaks in English/Romanized form.
+def is_service_perspective_question(
+    query: str,
+) -> bool:
 
-    Example:
+    q = normalize_text(query).lower()
 
-        Who is Arjun Sharma?
-        ->
-        Who is Arjun Sharma? अर्जुन शर्मा
-    """
+    has_perspective = any(
+        phrase.lower() in q
+        for phrase in SERVICE_PERSPECTIVE_TERMS
+    )
+
+    if not has_perspective:
+        return False
+
+    information_terms = {
+        "जानकारी",
+        "जानकार",
+        "थाहा",
+        "कसको",
+        "क-कसको",
+        "कस-कसको",
+        "को",
+        "who",
+        "know",
+        "information",
+    }
+
+    return any(
+        term in q
+        for term in information_terms
+    )
+
+
+# =========================================================
+# DISCOVERY DETECTION
+# =========================================================
+
+def is_discovery_question(query: str) -> bool:
+
+    q = normalize_text(query).lower()
+
+    if not q:
+        return False
+
+    for phrase in DISCOVERY_PHRASES:
+
+        if phrase.lower() in q:
+            return True
+
+    if (
+        "do we have" in q
+        or "is there" in q
+        or "are there" in q
+    ):
+        return True
+
+    if (
+        "हाम्रोमा" in q
+        and (
+            "को" in q
+            or "कुनै" in q
+            or "व्यक्ति" in q
+        )
+    ):
+        return True
+
+    if is_service_perspective_question(q):
+        return True
+
+    return False
+
+
+# =========================================================
+# TECHNICAL DISCOVERY
+# =========================================================
+
+def is_technical_discovery(query: str) -> bool:
+
+    q = normalize_text(query).lower()
+
+    if not is_discovery_question(q):
+        return False
+
+    return any(
+        term in q
+        for term in TECHNICAL_TERMS
+    )
+
+
+# =========================================================
+# FOLLOW-UP DETECTION
+# =========================================================
+
+def is_person_followup(query: str) -> bool:
+
+    q = normalize_text(query).lower()
+
+    return any(
+        word in q
+        for word in PERSON_PRONOUNS
+    )
+
+
+# =========================================================
+# PERSON INTRODUCTION DETECTION
+# =========================================================
+
+def is_person_intro(query: str) -> bool:
+
+    q = normalize_text(query).lower()
+
+    patterns = [
+        "who is",
+        "who's",
+        "who was",
+        "tell me about",
+        "can you tell me about",
+        "introduce",
+        "what is",
+
+        "को हुन्",
+        "को हो",
+        "को हुनुहुन्छ",
+        "को रहेछन्",
+        "परिचय",
+        "परिचय दिनुहोस्",
+        "बारेमा बताउनुहोस्",
+        "बारेमा भन्नुहोस्",
+    ]
+
+    return any(
+        pattern in q
+        for pattern in patterns
+    )
+
+
+# =========================================================
+# FOLLOW-UP RESOLUTION
+# =========================================================
+
+def resolve_followup_query(
+    query: str,
+) -> str:
+
+    current_person = get_current_person()
+
+    if not current_person:
+        return query
+
+    if not is_person_followup(query):
+        return query
+
+    resolved = (
+        f"{current_person} {query}"
+    )
+
+    print(
+        f"[MEMORY] Resolved follow-up: "
+        f"{resolved}"
+    )
+
+    return resolved
+
+
+# =========================================================
+# ENTITY EXPANSION
+# =========================================================
+
+def expand_entity_query(
+    query: str,
+) -> str:
 
     original = normalize_text(query)
 
     if not original:
         return ""
 
+    aliases = {
+        "arjun sharma": "अर्जुन शर्मा",
+        "arjun": "अर्जुन शर्मा",
+    }
+
     lower = original.lower()
 
     additions = []
 
-    for alias, canonical in ENTITY_ALIASES.items():
+    for alias, canonical in aliases.items():
 
         if alias in lower:
             additions.append(canonical)
 
     if additions:
 
-        unique = list(dict.fromkeys(additions))
+        unique = list(
+            dict.fromkeys(additions)
+        )
 
         return (
             f"{original} "
@@ -274,65 +534,10 @@ def expand_entity_query(query: str) -> str:
 
 
 # =========================================================
-# DETECT WHETHER QUESTION IS ABOUT ARJUN
-# =========================================================
-
-def is_arjun_question(query: str) -> bool:
-    """
-    Determine whether a question belongs to the current
-    knowledge domain.
-
-    The knowledge base is currently about Arjun Sharma.
-
-    Examples that return True:
-
-        अर्जुनको पेशा के हो?
-        अर्जुनको जन्म कहाँ भएको हो?
-        उनको मनपर्ने खाना के हो?
-        Who is Arjun Sharma?
-        What are Arjun's technical skills?
-
-    Examples that return False:
-
-        नेपालको सबैभन्दा अग्लो हिमाल कुन हो?
-        आज काठमाडौंको मौसम कस्तो छ?
-        नेपालको राष्ट्रपति को हुनुहुन्छ?
-    """
-
-    query = normalize_text(query)
-
-    if not query:
-        return False
-
-    lower = query.lower()
-
-    # -----------------------------------------------------
-    # Direct entity reference
-    # -----------------------------------------------------
-
-    for alias in ENTITY_ALIASES:
-
-        if alias.lower() in lower:
-            return True
-
-    # -----------------------------------------------------
-    # Nepali person reference
-    # -----------------------------------------------------
-
-    for word in PERSON_REFERENCE_WORDS:
-
-        if word in query:
-            return True
-
-    return False
-
-
-# =========================================================
-# ENGLISH QUESTION NORMALIZATION FOR BM25
+# BM25 QUERY CLEANING
 # =========================================================
 
 QUESTION_WORDS = {
-    # English
     "who",
     "is",
     "are",
@@ -360,8 +565,10 @@ QUESTION_WORDS = {
     "did",
     "has",
     "have",
+    "do",
+    "we",
+    "any",
 
-    # Nepali
     "को",
     "का",
     "की",
@@ -382,25 +589,25 @@ QUESTION_WORDS = {
     "गर्नुहोस्",
     "छ",
     "छन्",
+    "हाम्रो",
+    "हाम्रोमा",
+    "कुनै",
+    "व्यक्ति",
 }
 
 
-def clean_bm25_query(query: str) -> str:
-    """
-    Remove common question words while preserving the
-    important subject/topic words.
-    """
+def clean_bm25_query(
+    query: str,
+) -> str:
 
     query = normalize_text(query)
 
     if not query:
         return ""
 
-    tokens = query.split()
+    result = []
 
-    cleaned = []
-
-    for token in tokens:
+    for token in query.split():
 
         token = token.lower().strip(
             ".,!?;:'\"()[]{}"
@@ -412,15 +619,19 @@ def clean_bm25_query(query: str) -> str:
         if token in QUESTION_WORDS:
             continue
 
-        cleaned.append(token)
+        result.append(token)
 
-    result = " ".join(cleaned)
+    cleaned = " ".join(result)
 
-    return result if result else query
+    return (
+        cleaned
+        if cleaned
+        else query
+    )
 
 
 # =========================================================
-# LOAD EMBEDDINGS
+# EMBEDDINGS
 # =========================================================
 
 @st.cache_resource(show_spinner=False)
@@ -444,7 +655,7 @@ def load_embeddings():
         )
 
         print(
-            "[INIT] Embedding model loaded locally."
+            "[INIT] Embedding model loaded."
         )
 
         return embeddings
@@ -452,8 +663,7 @@ def load_embeddings():
     except Exception as exc:
 
         print(
-            "[WARN] Local embedding load failed:"
-            f" {exc}"
+            f"[WARN] Local embedding load failed: {exc}"
         )
 
         embeddings = HuggingFaceEmbeddings(
@@ -463,34 +673,28 @@ def load_embeddings():
             },
         )
 
-        print(
-            "[INIT] Embedding model loaded."
-        )
-
         return embeddings
 
 
 # =========================================================
-# LOAD CHROMA
+# CHROMA
 # =========================================================
 
 @st.cache_resource(show_spinner=False)
 def load_vector_store():
 
-    if not os.path.exists(PERSIST_DIR):
+    if not os.path.exists(
+        PERSIST_DIR
+    ):
 
         print(
-            "[ERROR] Chroma database missing:"
-            f" {PERSIST_DIR}"
+            f"[ERROR] Chroma database missing: "
+            f"{PERSIST_DIR}"
         )
 
         return None
 
     embeddings = load_embeddings()
-
-    print(
-        "[INIT] Opening Chroma database..."
-    )
 
     vector_store = Chroma(
         persist_directory=PERSIST_DIR,
@@ -498,31 +702,29 @@ def load_vector_store():
     )
 
     print(
-        "[INIT] Chroma database ready."
+        "[INIT] Chroma ready."
     )
 
     return vector_store
 
 
 # =========================================================
-# LOAD BM25
+# BM25
 # =========================================================
 
 @st.cache_resource(show_spinner=False)
 def load_bm25():
 
-    if not os.path.exists(BM25_PKL_PATH):
+    if not os.path.exists(
+        BM25_PKL_PATH
+    ):
 
         print(
-            "[ERROR] BM25 index missing:"
-            f" {BM25_PKL_PATH}"
+            f"[ERROR] BM25 index missing: "
+            f"{BM25_PKL_PATH}"
         )
 
         return None
-
-    print(
-        "[INIT] Loading BM25 index..."
-    )
 
     with open(
         BM25_PKL_PATH,
@@ -541,7 +743,7 @@ def load_bm25():
 
 
 # =========================================================
-# LOAD GROQ
+# GROQ
 # =========================================================
 
 @st.cache_resource(show_spinner=False)
@@ -554,28 +756,79 @@ def load_groq():
     if not api_key:
 
         print(
-            "[ERROR] GROQ_API_KEY missing."
+            "[GROQ ERROR] "
+            "GROQ_API_KEY is not set."
         )
 
         return None
 
     print(
-        "[INIT] Initializing Groq..."
+        "[GROQ] API key detected."
     )
 
-    client = Groq(
-        api_key=api_key
-    )
+    try:
 
-    print(
-        "[INIT] Groq ready."
-    )
+        client = Groq(
+            api_key=api_key
+        )
 
-    return client
+        # ---------------------------------------------
+        # Verify that the current API key can see
+        # the configured model.
+        # ---------------------------------------------
+
+        models = client.models.list()
+
+        available_models = {
+            model.id
+            for model in models.data
+        }
+
+        print(
+            f"[GROQ] Checking model: "
+            f"{GROQ_MODEL}"
+        )
+
+        if GROQ_MODEL not in available_models:
+
+            print(
+                f"[GROQ ERROR] "
+                f"{GROQ_MODEL} is not available "
+                f"for this API key/project."
+            )
+
+            print(
+                "[GROQ] Available models:"
+            )
+
+            for model_id in sorted(
+                available_models
+            ):
+                print(
+                    f"  - {model_id}"
+                )
+
+            return None
+
+        print(
+            f"[GROQ] Model available: "
+            f"{GROQ_MODEL}"
+        )
+
+        return client
+
+    except Exception as exc:
+
+        print(
+            f"[GROQ INIT ERROR] "
+            f"{exc}"
+        )
+
+        return None
 
 
 # =========================================================
-# LOAD COMPLETE PIPELINE
+# COMPLETE PIPELINE
 # =========================================================
 
 @st.cache_resource(show_spinner=False)
@@ -589,30 +842,12 @@ def load_rag_pipeline():
     bm25 = load_bm25()
     groq_client = load_groq()
 
-    if vector_store is None:
-        print(
-            "[ERROR] Vector store unavailable."
-        )
-
-    if bm25 is None:
-        print(
-            "[ERROR] BM25 unavailable."
-        )
-
-    if groq_client is None:
-        print(
-            "[ERROR] Groq unavailable."
-        )
-
-    if (
-        vector_store is not None
-        and bm25 is not None
-        and groq_client is not None
-    ):
-
-        print(
-            "[INIT] RAG pipeline ready."
-        )
+    print(
+        "[PIPELINE STATUS] "
+        f"vector_store={vector_store is not None}, "
+        f"bm25={bm25 is not None}, "
+        f"groq={groq_client is not None}"
+    )
 
     return (
         vector_store,
@@ -622,18 +857,41 @@ def load_rag_pipeline():
 
 
 # =========================================================
-# HYBRID RETRIEVAL
+# RETRIEVAL
 # =========================================================
 
 def retrieve_documents(
     query: str,
 ):
-    """
-    BM25 + vector retrieval in parallel.
 
-    We use rank fusion because BM25 scores and vector
-    distances are not on the same numerical scale.
-    """
+    if query is None:
+
+        print(
+            "[RAG] None query ignored."
+        )
+
+        return []
+
+    query = normalize_text(
+        query
+    )
+
+    if not query:
+
+        print(
+            "[RAG] Empty query ignored."
+        )
+
+        return []
+
+    if len(query) < 2:
+
+        print(
+            f"[RAG] Query too short: "
+            f"{query!r}"
+        )
+
+        return []
 
     vector_store, bm25, _ = (
         load_rag_pipeline()
@@ -643,77 +901,97 @@ def retrieve_documents(
         vector_store is None
         or bm25 is None
     ):
-        return []
 
-    query = normalize_text(query)
+        print(
+            "[RETRIEVAL] "
+            "Vector/BM25 unavailable."
+        )
 
-    if not query:
         return []
 
     start = time.perf_counter()
 
-    # -----------------------------------------------------
-    # Expand entity
-    # -----------------------------------------------------
+    resolved_query = (
+        resolve_followup_query(
+            query
+        )
+    )
 
     expanded_query = (
-        expand_entity_query(query)
+        expand_entity_query(
+            resolved_query
+        )
     )
 
     semantic_query = expanded_query
 
-    lexical_query = clean_bm25_query(
-        expanded_query
+    lexical_query = (
+        clean_bm25_query(
+            expanded_query
+        )
     )
 
     print(
-        f"[QUERY] Original: {query}"
+        f"[QUERY] Original: "
+        f"{query}"
     )
 
-    if expanded_query != query:
+    if resolved_query != query:
 
         print(
-            f"[QUERY] Expanded: {expanded_query}"
+            f"[QUERY RESOLVED] "
+            f"{resolved_query}"
         )
 
     print(
-        f"[QUERY] BM25: {lexical_query}"
+        f"[QUERY BM25] "
+        f"{lexical_query}"
     )
 
     # -----------------------------------------------------
     # Parallel retrieval
     # -----------------------------------------------------
 
-    with ThreadPoolExecutor(
-        max_workers=2
-    ) as executor:
+    try:
 
-        vector_future = executor.submit(
-            vector_store.similarity_search,
-            semantic_query,
-            VECTOR_K,
+        with ThreadPoolExecutor(
+            max_workers=2
+        ) as executor:
+
+            vector_future = executor.submit(
+                vector_store.similarity_search,
+                semantic_query,
+                VECTOR_K,
+            )
+
+            bm25_future = executor.submit(
+                bm25.invoke,
+                lexical_query,
+            )
+
+            vector_docs = (
+                vector_future.result()
+            )
+
+            bm25_docs = (
+                bm25_future.result()
+            )
+
+    except Exception as exc:
+
+        print(
+            f"[RETRIEVAL ERROR] "
+            f"{exc}"
         )
 
-        bm25_future = executor.submit(
-            bm25.invoke,
-            lexical_query,
-        )
-
-        vector_docs = (
-            vector_future.result()
-        )
-
-        bm25_docs = (
-            bm25_future.result()
-        )
+        return []
 
     # -----------------------------------------------------
-    # MERGE
+    # Merge
     # -----------------------------------------------------
 
     merged = {}
 
-    # Vector results
     for rank, doc in enumerate(
         vector_docs,
         start=1,
@@ -726,15 +1004,15 @@ def retrieve_documents(
         if not text:
             continue
 
-        if text not in merged:
-
-            merged[text] = {
+        merged.setdefault(
+            text,
+            {
                 "doc": doc,
                 "vector_rank": rank,
                 "bm25_rank": None,
-            }
+            },
+        )
 
-    # BM25 results
     for rank, doc in enumerate(
         bm25_docs,
         start=1,
@@ -762,7 +1040,7 @@ def retrieve_documents(
             ] = rank
 
     # -----------------------------------------------------
-    # RRF
+    # Reciprocal Rank Fusion
     # -----------------------------------------------------
 
     RRF_K = 60.0
@@ -798,23 +1076,14 @@ def retrieve_documents(
                 "score": score,
                 "text": text,
                 "doc": item["doc"],
-                "vector_rank": item[
-                    "vector_rank"
-                ],
-                "bm25_rank": item[
-                    "bm25_rank"
-                ],
+                "vector_rank": item["vector_rank"],
+                "bm25_rank": item["bm25_rank"],
             }
         )
 
     fused.sort(
-        key=lambda x: x["score"],
+        key=lambda item: item["score"],
         reverse=True,
-    )
-
-    elapsed = (
-        time.perf_counter()
-        - start
     )
 
     print(
@@ -822,47 +1091,44 @@ def retrieve_documents(
         f"vector={len(vector_docs)} "
         f"bm25={len(bm25_docs)} "
         f"unique={len(fused)} "
-        f"time={elapsed:.3f}s"
+        f"time={time.perf_counter() - start:.3f}s"
     )
 
-    # Debug output
     for index, item in enumerate(
-        fused[:FINAL_CONTEXT_CHUNKS],
+        fused[
+            :FINAL_CONTEXT_CHUNKS
+        ],
         start=1,
     ):
 
         preview = (
-            item["text"][:150]
+            item["text"][:160]
             .replace("\n", " ")
         )
 
         print(
-            f"[RETRIEVAL {index}] "
+            f"[RESULT {index}] "
             f"rrf={item['score']:.6f} "
             f"vector={item['vector_rank']} "
             f"bm25={item['bm25_rank']} "
-            f"text={preview}"
+            f"{preview}"
         )
 
     return fused
 
 
 # =========================================================
-# BUILD CONTEXT
+# CONTEXT BUILDER
 # =========================================================
 
 def build_context(
     documents,
-) -> str:
-    """
-    Keep several relevant chunks instead of only one.
-    """
+):
 
     if not documents:
         return ""
 
     chunks = []
-
     total_chars = 0
 
     for item in documents[
@@ -882,11 +1148,9 @@ def build_context(
         if remaining <= 0:
             break
 
-        if len(text) > remaining:
-
-            text = text[
-                :remaining
-            ]
+        text = text[
+            :remaining
+        ]
 
         chunks.append(
             text
@@ -902,30 +1166,110 @@ def build_context(
 
 
 # =========================================================
-# MAIN ANSWER FUNCTION
+# SERVICE PERSPECTIVE CORRECTION
+# =========================================================
+
+def correct_service_perspective(
+    answer: str,
+    query: str,
+) -> str:
+
+    if not answer:
+        return ""
+
+    answer = answer.strip()
+
+    if not is_discovery_question(
+        query
+    ):
+        return answer
+
+    replacements = [
+        ("तपाईंलाई", "मलाई"),
+        ("तपाईलाई", "मलाई"),
+        ("तपाईँलाई", "मलाई"),
+        ("तपाईं लाई", "मलाई"),
+        ("तपाई लाई", "मलाई"),
+        ("तपाईँ लाई", "मलाई"),
+        ("tapai lai", "malai"),
+        ("tapailai", "malai"),
+    ]
+
+    corrected = answer
+
+    for old, new in replacements:
+
+        corrected = corrected.replace(
+            old,
+            new,
+        )
+
+    # Beginning of answer.
+    corrected = re.sub(
+        r"^\s*तपाईंलाई\s+",
+        "मलाई ",
+        corrected,
+    )
+
+    corrected = re.sub(
+        r"^\s*तपाईलाई\s+",
+        "मलाई ",
+        corrected,
+    )
+
+    corrected = re.sub(
+        r"^\s*तपाईँलाई\s+",
+        "मलाई ",
+        corrected,
+    )
+
+    return corrected.strip()
+
+
+# =========================================================
+# MAIN ANSWER
 # =========================================================
 
 def answer_user_query(
     query: str,
 ) -> str:
-    """
-    Closed-domain conversational RAG.
 
-    Important behavior:
+    total_start = time.perf_counter()
 
-        About Arjun
-            -> retrieve + answer
+    # =====================================================
+    # ABSOLUTE EMPTY INPUT PROTECTION
+    # =====================================================
 
-        Not about Arjun
-            -> NO_INFO
+    if query is None:
 
-        Goodbye
-            -> goodbye immediately
-    """
+        print(
+            "[RAG] None query ignored. "
+            "No retrieval. No Groq."
+        )
 
-    total_start = (
-        time.perf_counter()
+        return ""
+
+    query = normalize_text(
+        query
     )
+
+    if not query:
+
+        print(
+            "[RAG] Blank query ignored. "
+            "No retrieval. No Groq."
+        )
+
+        return ""
+
+    if len(query) < 2:
+
+        print(
+            f"[RAG] Too-short query ignored: "
+            f"{query!r}"
+        )
+
+        return ""
 
     print(
         "\n"
@@ -940,46 +1284,19 @@ def answer_user_query(
         "=" * 70
     )
 
-    query = normalize_text(
+    # =====================================================
+    # EXIT
+    # =====================================================
+
+    if is_exit_intent(
         query
-    )
+    ):
 
-    if not query:
-        return NO_INFO
-
-    # =====================================================
-    # CALL END
-    # =====================================================
-
-    if is_exit_intent(query):
-
-        print(
-            "[INTENT] EXIT"
+        set_current_person(
+            None
         )
 
         return GOODBYE_RESPONSE
-
-    # =====================================================
-    # DOMAIN GATE
-    # =====================================================
-    #
-    # This is intentionally performed BEFORE retrieval.
-    #
-    # It prevents Groq from answering general-world
-    # questions using its training knowledge.
-    # =====================================================
-
-    if not is_arjun_question(query):
-
-        print(
-            "[DOMAIN] OUTSIDE KNOWLEDGE BASE"
-        )
-
-        return NO_INFO
-
-    print(
-        "[DOMAIN] ARJUN QUESTION"
-    )
 
     # =====================================================
     # LOAD PIPELINE
@@ -988,8 +1305,15 @@ def answer_user_query(
     (
         vector_store,
         bm25,
-        groq_client,
+        groq,
     ) = load_rag_pipeline()
+
+    print(
+        "[PIPELINE STATUS] "
+        f"vector_store={vector_store is not None}, "
+        f"bm25={bm25 is not None}, "
+        f"groq={groq is not None}"
+    )
 
     if (
         vector_store is None
@@ -998,12 +1322,16 @@ def answer_user_query(
 
         return DATABASE_ERROR
 
-    if groq_client is None:
+    if groq is None:
 
-        return SERVER_ERROR
+        print(
+            "[RAG] Groq client unavailable."
+        )
+
+        return GROQ_UNAVAILABLE
 
     # =====================================================
-    # RETRIEVE
+    # RETRIEVAL
     # =====================================================
 
     retrieval_start = (
@@ -1026,11 +1354,50 @@ def answer_user_query(
 
     if not documents:
 
-        print(
-            "[RAG] No documents retrieved."
-        )
-
         return NO_INFO
+
+    # =====================================================
+    # INTENT
+    # =====================================================
+
+    discovery = (
+        is_discovery_question(
+            query
+        )
+    )
+
+    technical_discovery = (
+        is_technical_discovery(
+            query
+        )
+    )
+
+    followup = (
+        is_person_followup(
+            query
+        )
+    )
+
+    intro = (
+        is_person_intro(
+            query
+        )
+    )
+
+    service_perspective = (
+        is_service_perspective_question(
+            query
+        )
+    )
+
+    print(
+        "[INTENT] "
+        f"discovery={discovery}, "
+        f"technical={technical_discovery}, "
+        f"followup={followup}, "
+        f"intro={intro}, "
+        f"service_perspective={service_perspective}"
+    )
 
     # =====================================================
     # CONTEXT
@@ -1044,76 +1411,214 @@ def answer_user_query(
 
         return NO_INFO
 
-    print(
-        f"[CONTEXT] "
-        f"{len(context)} characters"
-    )
+    # =====================================================
+    # TASK
+    # =====================================================
+
+    if technical_discovery:
+
+        task_instruction = """
+प्रयोगकर्ताले प्राविधिक वा प्रविधिसम्बन्धी
+क्षेत्रमा पर्ने व्यक्ति खोजिरहेको छ।
+
+सन्दर्भमा प्राविधिक काम, सफ्टवेयर, इन्जिनियरिङ,
+प्रोग्रामिङ, प्रविधि वा सम्बन्धित सीप भएका
+व्यक्तिहरू पहिचान गर्नुहोस्।
+
+मिल्ने व्यक्तिको नाम र भूमिका बताउनुहोस्।
+
+एक जना मात्र मिलेमा एक जनाको नाम बताउनुहोस्।
+धेरै जना मिलेमा छोटकरीमा सबैको नाम बताउनुहोस्।
+
+उत्तरमा "तपाईंलाई" प्रयोग नगर्नुहोस्।
+"""
+
+    elif service_perspective:
+
+        task_instruction = """
+प्रयोगकर्ताले सेवासँग उपलब्ध जानकारीबारे सोधिरहेको छ।
+
+उत्तर सेवाको पहिलो व्यक्तिको दृष्टिकोणबाट दिनुहोस्।
+
+अत्यन्त महत्वपूर्ण:
+
+"तपाईंलाई", "तपाईलाई", "तपाईँलाई",
+"तपाईं लाई", "तपाई लाई", "tapai lai",
+"tapailai" प्रयोग नगर्नुहोस्।
+
+सधैं "मलाई" प्रयोग गर्नुहोस्।
+
+उदाहरण:
+
+प्रश्न:
+"तपाईंलाई कस-कसको बारेमा जानकारी छ?"
+
+सही:
+"मलाई अर्जुन शर्मा, उहाँकी बहिनी तथा
+उहाँका आमाबुबाको बारेमा जानकारी छ।"
+
+गलत:
+"तपाईंलाई अर्जुन शर्मा..."
+
+सन्दर्भमा उल्लेख भएका सान्दर्भिक व्यक्तिहरू,
+परिवारका सदस्यहरू वा सम्बन्धित व्यक्तिहरूको
+जानकारी प्रश्नसँग सम्बन्धित भए उनीहरूको
+नाम/सम्बन्ध स्पष्ट रूपमा बताउनुहोस्।
+"""
+
+    elif discovery:
+
+        task_instruction = """
+प्रयोगकर्ताले हाम्रो जानकारीमा रहेका व्यक्ति
+वा सम्बन्धित व्यक्ति खोजिरहेको छ।
+
+सन्दर्भमा उपलब्ध व्यक्तिहरू पहिचान गर्नुहोस्।
+
+"कसको जानकारी छ?" जस्तो प्रश्न भए व्यक्तिहरूको
+नाम स्पष्ट रूपमा बताउनुहोस्।
+
+यदि सन्दर्भमा परिवारका सदस्य वा अन्य व्यक्तिहरूको
+बारेमा छुट्टै जानकारी उपलब्ध छ भने प्रश्नले
+त्यो मागेको अवस्थामा उनीहरूलाई पनि समावेश गर्नुहोस्।
+
+कुनै विशेष विषय वा क्षेत्र उल्लेख गरिएको छ भने
+त्यससँग सम्बन्धित व्यक्तिलाई प्राथमिकता दिनुहोस्।
+
+उत्तर सेवाको दृष्टिकोणबाट दिनुहोस्।
+"""
+
+    elif intro:
+
+        task_instruction = """
+प्रयोगकर्ताले कुनै व्यक्तिको परिचय मागेको छ।
+
+सन्दर्भमा भएको नाम, पेशा, स्थान, अनुभव र अन्य
+मुख्य परिचयात्मक तथ्यबाट छोटो तर पूर्ण परिचय दिनुहोस्।
+
+नाम मात्र दोहोर्याएर उत्तर नदिनुहोस्।
+"""
+
+    elif followup:
+
+        task_instruction = """
+प्रयोगकर्ता अघिल्लो कुराकानीमा उल्लेख भएको
+व्यक्तिबारे थप प्रश्न गरिरहेको छ।
+
+त्यही व्यक्तिसँग सम्बन्धित सन्दर्भबाट
+सीधै प्रश्नको उत्तर दिनुहोस्।
+"""
+
+    else:
+
+        task_instruction = """
+प्रयोगकर्ताको प्रश्नको सिधा उत्तर दिनुहोस्।
+
+सम्बन्धित context chunks का तथ्यहरू जोडेर
+पूर्ण तर संक्षिप्त उत्तर बनाउनुहोस्।
+"""
 
     # =====================================================
     # SYSTEM PROMPT
     # =====================================================
 
+    current_person = (
+        get_current_person()
+    )
+
     system_prompt = f"""
-तपाईं अर्जुन शर्माको व्यक्तिगत जीवनीमा आधारित
-नेपाली फोन भोइस असिस्टेन्ट हुनुहुन्छ।
+तपाईं एक स्वचालित टेलिफोन सूचना सेवाको
+उत्तर जनरेटर हुनुहुन्छ।
 
-अत्यन्त महत्वपूर्ण:
+तपाईंको ज्ञानको एकमात्र स्रोत तलको सन्दर्भ हो।
 
-तलको सन्दर्भ नै तपाईंको सम्पूर्ण ज्ञान हो।
+कडा नियम:
 
-तपाईंले बाहिरी संसारको ज्ञान प्रयोग गर्न पाउनुहुन्न।
-आफ्नो प्रशिक्षणबाट आएको तथ्य प्रयोग नगर्नुहोस्।
-अनुमान गरेर नयाँ तथ्य नबनाउनुहोस्।
+१. सन्दर्भ बाहिरको सामान्य ज्ञान प्रयोग नगर्नुहोस्।
 
-सन्दर्भमा भएको तथ्यहरूलाई मात्र प्रयोग गर्नुहोस्।
+२. आफ्नो प्रशिक्षणबाट आएको तथ्य थपेर उत्तर नदिनुहोस्।
 
-प्रश्नको उत्तर सन्दर्भमा छ भने त्यसलाई
-प्राकृतिक नेपाली भाषामा स्पष्ट रूपमा उत्तर दिनुहोस्।
+३. अनुमान गरेर नयाँ तथ्य नबनाउनुहोस्।
 
-प्रश्न सन्दर्भमा छैन भने:
+४. सन्दर्भमा उत्तर भेटिएमा सिधै उत्तर दिनुहोस्।
 
+५. सन्दर्भमा पर्याप्त जानकारी नभएमा:
 "माफ गर्नुहोस्, यस विषयमा उपलब्ध जानकारी छैन।"
+भन्नुहोस्।
 
-मात्र भन्नुहोस्।
+६. प्रयोगकर्ताले कुनै व्यक्तिको बारेमा सोधेमा
+त्यही व्यक्तिको जानकारी दिनुहोस्।
 
-विशेष निर्देशन:
+७. आफूलाई AI, chatbot, voice assistant,
+virtual assistant वा language model भनेर
+परिचय नदिनुहोस्।
 
-१. उत्तर केवल नेपाली देवनागरी लिपिमा दिनुहोस्।
+८. "Who is Arjun Sharma?" अथवा
+"अर्जुन शर्मा को हुन्?" जस्ता प्रश्नमा
+अर्जुन शर्माको परिचय दिनुहोस्,
+सेवाको परिचय होइन।
 
-२. प्रश्नको अर्थ बुझ्नुहोस्; प्रश्नका शब्दहरू
-   हुबहु सन्दर्भमा नहुन पनि सक्छन्।
+९. सेवासँग उपलब्ध जानकारीबारे प्रश्न हुँदा
+सेवाको पहिलो व्यक्तिको दृष्टिकोणबाट उत्तर दिनुहोस्।
 
-३. समान अर्थ भएका शब्दहरू बुझ्नुहोस्।
+१०. विशेष रूपमा:
 
-   उदाहरण:
-   "पेशा" = काम / पेशागत विवरण
-   "जन्म कहाँ" = जन्म स्थान
-   "कुन विषयमा स्नातक" = स्नातक विषय
-   "कहिले पूरा गरे" = प्राप्त गरेको वर्ष
-   "सीप" = प्राविधिक सीप
-   "मनपर्ने खाना" = मनपर्ने कुराहरू
-   "पहिले कुन कम्पनी" = प्रारम्भिक/पूर्व कम्पनी
-   "प्रमुख उपलब्धि" = प्रमुख उपलब्धिहरू
-   "भविष्यको लक्ष्य" = भविष्यका लक्ष्य
+प्रश्न:
+"तपाईंलाई कस-कसको बारेमा जानकारी छ?"
 
-४. फरक context chunks मा एउटै प्रश्नसँग
-   सम्बन्धित तथ्यहरू छन् भने तिनीहरूलाई जोड्नुहोस्।
+उत्तर:
+"मलाई अर्जुन शर्मा, उहाँकी बहिनी तथा
+उहाँका आमाबुबाको बारेमा जानकारी छ।"
 
-५. "को हुन्?" भन्ने प्रश्नमा केवल नाम नदोहोर्याई
-   छोटो परिचय दिनुहोस्।
+कहिल्यै:
+"तपाईंलाई अर्जुन शर्मा..."
+नभन्नुहोस्।
 
-६. "उनको", "उनले", "उनी", "उहाँ" जस्ता
-   शब्दहरू यहाँ अर्जुन शर्मालाई जनाउँछन्।
+११. "तपाईंलाई", "तपाईलाई", "तपाईँलाई",
+"तपाईं लाई", "तपाई लाई", "tapai lai",
+"tapailai" प्रयोगकर्ताको प्रश्नमा भए पनि
+उत्तरमा ती शब्दहरू नक्कल नगर्नुहोस्।
 
-७. उत्तर १–३ प्राकृतिक वाक्यमा राख्नुहोस्,
-   जबसम्म थप विवरण आवश्यक हुँदैन।
+१२. सेवाको दृष्टिकोणबाट "मलाई" प्रयोग गर्नुहोस्।
 
-८. "प्राप्त जानकारी अनुसार", "कागजात अनुसार",
-   "डाटा अनुसार" जस्ता वाक्यांश प्रयोग नगर्नुहोस्।
+१३. "कसको जानकारी छ?", "हाम्रोमा को-को हुनुहुन्छ?"
+जस्ता प्रश्नमा सन्दर्भमा उपलब्ध व्यक्तिहरूको
+नाम बताउनुहोस्।
 
-९. फोनमा बोल्दा प्राकृतिक सुनिने भाषा प्रयोग गर्नुहोस्।
+१४. "कुनै प्राविधिक व्यक्ति हुनुहुन्छ?",
+"कुनै इन्जिनियर हुनुहुन्छ?" जस्ता प्रश्नमा
+सन्दर्भमा मिल्ने व्यक्तिको नाम र भूमिका बताउनुहोस्।
 
-१०. सन्दर्भमा नभएको कुनै तथ्य कहिल्यै नबनाउनुहोस्।
+१५. "उनी", "उहाँ", "उनको", "उनले" जस्ता
+सर्वनामलाई कुराकानीमा सम्झिएको व्यक्तिसँग
+जोड्नुहोस्।
+
+१६. उत्तर केवल नेपाली देवनागरीमा दिनुहोस्।
+
+१७. फोनमा बोल्न प्राकृतिक सुनिने भाषा प्रयोग गर्नुहोस्।
+
+१८. सामान्य प्रश्नमा १ देखि ४ वटा छोटा वाक्य पर्याप्त छन्।
+
+१९. उत्तरको अन्तिम वाक्य पूरा गर्नुहोस्।
+अधुरो वाक्यमा कहिल्यै रोक्नु हुँदैन।
+
+२०. अनावश्यक भूमिका वा लामो व्याख्या नगर्नुहोस्।
+
+२१. "प्राप्त जानकारी अनुसार",
+"कागजात अनुसार",
+"डाटा अनुसार"
+जस्ता औपचारिक वाक्यांश प्रयोग नगर्नुहोस्।
+
+२२. सन्दर्भमा नभएको तथ्य कहिल्यै नबनाउनुहोस्।
+
+२३. प्रश्नको उत्तर दिँदा प्रश्नको विषयमै केन्द्रित
+रहनुहोस्। आफू, यो सेवा वा मोडेलको परिचयतर्फ
+विषय नबदल्नुहोस्।
+
+हालको कुराकानीमा सम्झिएको व्यक्ति:
+{current_person or "कुनै निश्चित व्यक्ति छैन"}
+
+यस प्रश्नको उद्देश्य:
+{task_instruction}
 
 सन्दर्भ:
 ==================================================
@@ -1122,17 +1627,15 @@ def answer_user_query(
 """
 
     # =====================================================
-    # GROQ
+    # GROQ / GPT-OSS 20B
     # =====================================================
 
-    llm_start = (
-        time.perf_counter()
-    )
+    llm_start = time.perf_counter()
 
     try:
 
         response = (
-            groq_client
+            groq
             .chat
             .completions
             .create(
@@ -1151,21 +1654,184 @@ def answer_user_query(
 
                 temperature=0.0,
 
-                max_tokens=MAX_RESPONSE_TOKENS,
+                reasoning_effort=(
+                    GROQ_REASONING_EFFORT
+                ),
+
+                include_reasoning=False,
+
+                max_completion_tokens=(
+                    MAX_COMPLETION_TOKENS
+                ),
+
+                stream=False,
             )
         )
 
-        answer = (
-            response
-            .choices[0]
-            .message
-            .content
-            .strip()
+        # =================================================
+        # SAFE RESPONSE EXTRACTION
+        # =================================================
+
+        choices = getattr(
+            response,
+            "choices",
+            None,
         )
+
+        if not choices:
+
+            print(
+                "[GROQ ERROR] "
+                "No choices returned."
+            )
+
+            return SERVER_ERROR
+
+        message = choices[0].message
+
+        content = getattr(
+            message,
+            "content",
+            None,
+        )
+
+        reasoning = getattr(
+            message,
+            "reasoning",
+            None,
+        )
+
+        print(
+            "[GROQ DEBUG] "
+            f"content_present={bool(content)} "
+            f"reasoning_present={bool(reasoning)}"
+        )
+
+        if reasoning:
+
+            print(
+                "[GROQ DEBUG] "
+                f"Reasoning length: "
+                f"{len(reasoning)}"
+            )
+
+        answer = ""
+
+        if content:
+
+            answer = str(
+                content
+            ).strip()
+
+        # -------------------------------------------------
+        # Defensive model_dump fallback
+        # -------------------------------------------------
 
         if not answer:
 
+            print(
+                "[GROQ] Final content empty."
+            )
+
+            raw_dict = {}
+
+            try:
+
+                raw_dict = (
+                    message.model_dump()
+                )
+
+            except Exception:
+
+                try:
+
+                    raw_dict = vars(
+                        message
+                    )
+
+                except Exception:
+
+                    raw_dict = {}
+
+            possible_content = (
+                raw_dict.get(
+                    "content"
+                )
+                or raw_dict.get(
+                    "text"
+                )
+            )
+
+            if possible_content:
+
+                answer = str(
+                    possible_content
+                ).strip()
+
+        if not answer:
+
+            print(
+                "[GROQ ERROR] "
+                "Model returned no final answer."
+            )
+
             return SERVER_ERROR
+
+        # =================================================
+        # CLEAN
+        # =================================================
+
+        answer = re.sub(
+            r"^[`\"']+|[`\"']+$",
+            "",
+            answer,
+        ).strip()
+
+        answer = re.sub(
+            r"^(उत्तर|Answer)\s*[:：]\s*",
+            "",
+            answer,
+            flags=re.IGNORECASE,
+        ).strip()
+
+        # =================================================
+        # SERVICE PERSPECTIVE CORRECTION
+        # =================================================
+
+        before_perspective = answer
+
+        answer = correct_service_perspective(
+            answer,
+            query,
+        )
+
+        if answer != before_perspective:
+
+            print(
+                "[PERSPECTIVE] "
+                "Corrected response perspective."
+            )
+
+        # =================================================
+        # TERMINAL PUNCTUATION
+        # =================================================
+
+        if (
+            len(answer) > 25
+            and answer[-1] not in (
+                "।",
+                "?",
+                "!",
+                ".",
+                "…",
+            )
+        ):
+
+            answer += "।"
+
+        # =================================================
+        # TIMING
+        # =================================================
 
         llm_time = (
             time.perf_counter()
@@ -1175,6 +1841,10 @@ def answer_user_query(
         total_time = (
             time.perf_counter()
             - total_start
+        )
+
+        print(
+            f"[MODEL] {GROQ_MODEL}"
         )
 
         print(
@@ -1207,25 +1877,12 @@ def answer_user_query(
 
 
 # =========================================================
-# DEBUG FUNCTION
+# DEBUG
 # =========================================================
 
 def debug_query(
     query: str,
 ):
-    """
-    Debug domain detection and retrieval.
-
-    Example:
-
-        debug_query(
-            "अर्जुनको पेशा के हो?"
-        )
-
-        debug_query(
-            "Which is the tallest mountain in Nepal?"
-        )
-    """
 
     print(
         "\n"
@@ -1233,37 +1890,44 @@ def debug_query(
     )
 
     print(
-        f"QUERY: {query}"
+        f"QUERY: {query!r}"
     )
 
     print(
-        f"EXIT INTENT: "
-        f"{is_exit_intent(query)}"
+        f"MODEL: {GROQ_MODEL}"
     )
 
     print(
-        f"ARJUN DOMAIN: "
-        f"{is_arjun_question(query)}"
+        f"DISCOVERY: "
+        f"{is_discovery_question(query)}"
     )
 
-    if not is_arjun_question(query):
+    print(
+        f"SERVICE PERSPECTIVE: "
+        f"{is_service_perspective_question(query)}"
+    )
 
-        print(
-            "RESULT: OUTSIDE KNOWLEDGE BASE"
-        )
+    print(
+        f"TECHNICAL: "
+        f"{is_technical_discovery(query)}"
+    )
 
-        print(
-            "#" * 70
-        )
+    print(
+        f"FOLLOWUP: "
+        f"{is_person_followup(query)}"
+    )
 
-        return
+    print(
+        f"INTRO: "
+        f"{is_person_intro(query)}"
+    )
 
     results = retrieve_documents(
         query
     )
 
     print(
-        f"RESULT COUNT: {len(results)}"
+        f"RESULTS: {len(results)}"
     )
 
     for index, item in enumerate(
@@ -1276,16 +1940,17 @@ def debug_query(
         )
 
         print(
-            f"RRF: {item['score']:.6f}"
+            f"RRF: "
+            f"{item['score']:.6f}"
         )
 
         print(
-            f"VECTOR RANK: "
+            f"VECTOR: "
             f"{item['vector_rank']}"
         )
 
         print(
-            f"BM25 RANK: "
+            f"BM25: "
             f"{item['bm25_rank']}"
         )
 

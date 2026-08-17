@@ -1,349 +1,1100 @@
+# =========================================================
 # app.py
+# Google STT + RAG + Groq GPT-OSS 20B + Edge TTS
+# =========================================================
+
 import os
-import warnings
 import time
-import io
-import streamlit as st
-from gtts import gTTS
-import speech_recognition as sr
+import asyncio
+import tempfile
+import warnings
+
 import pygame
+import speech_recognition as sr
+import streamlit as st
+import edge_tts
+
 from src.rag.rag_engine import (
     answer_user_query,
-    load_rag_pipeline,
     is_exit_intent,
+    load_rag_pipeline,
 )
 
-# Suppress logs
+
+# =========================================================
+# CONFIGURATION
+# =========================================================
+
 os.environ["TRANSFORMERS_VERBOSITY"] = "error"
+
 warnings.filterwarnings("ignore")
 
-# Page Configuration
 st.set_page_config(
-    page_title="Nepali Voice RAG Agent", 
-    page_icon="🎙️", 
+    page_title="Nepali Information Service",
+    page_icon="☎️",
     layout="centered",
-    initial_sidebar_state="collapsed"
+    initial_sidebar_state="collapsed",
 )
 
-# ==========================================
-# AUDIO HELPER FUNCTIONS
-# ==========================================
-def ensure_mixer_initialized():
-    """Safely initializes Pygame audio mixer if stopped."""
-    if not pygame.mixer.get_init():
-        pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=512)
 
-def play_ringtone():
-    """Starts looped ringtone in a background audio thread."""
-    try:
-        ensure_mixer_initialized()
-        ringtone_path = "ringtone.mp3"
-        if not os.path.exists(ringtone_path):
-            ringtone_path = "assets/ringtone.mp3"
+# =========================================================
+# EDGE TTS
+# =========================================================
 
-        if os.path.exists(ringtone_path):
-            pygame.mixer.music.load(ringtone_path)
-            pygame.mixer.music.play(-1)
-        else:
-            print("[AUDIO WARNING] Ringtone file not found")
-    except Exception as e:
-        print(f"[AUDIO ERROR] Could not play ringtone: {e}")
+TTS_VOICE = "ne-NP-SagarNeural"
 
-def stop_ringtone():
-    """Stops ringtone playback."""
-    try:
-        if pygame.mixer.get_init():
-            pygame.mixer.music.stop()
-    except Exception as e:
-        print(f"[AUDIO ERROR] Stopping ringtone: {e}")
+TTS_RATE = "+0%"
+TTS_VOLUME = "+0%"
+TTS_PITCH = "+0Hz"
 
-def play_local_audio(text: str):
-    """Converts response to TTS and speaks via system speakers."""
-    print("--- [TTS START] Synthesizing speech... ---")
-    try:
-        ensure_mixer_initialized()
-        tts = gTTS(text=text, lang="ne")
-        audio_fp = io.BytesIO()
-        tts.write_to_fp(audio_fp)
-        audio_fp.seek(0)
-        
-        pygame.mixer.music.load(audio_fp)
-        pygame.mixer.music.play()
-        
-        while pygame.mixer.music.get_busy():
-            pygame.time.Clock().tick(15)
-            
-    except Exception as e:
-        print(f"--- [TTS ERROR] {e} ---")
 
-def listen_continuously() -> str:
-    """Listens directly to the local microphone with expanded limits to prevent cut-offs."""
-    recognizer = sr.Recognizer()
-    with sr.Microphone() as source:
-        recognizer.adjust_for_ambient_noise(source, duration=0.5)
-        print("\n[MIC ACTIVE] Listening for spoken user input...")
-        
-        try:
-            # Expanded timeout and phrase limit so sentences don't get clipped
-            audio_data = recognizer.listen(source, timeout=7.0, phrase_time_limit=15.0)
-            print("[STT START] Processing audio with SpeechRecognition...")
-            text = recognizer.recognize_google(audio_data, language="ne-NP")
-            print(f"[STT COMPLETE] Detected Text: '{text}'")
-            return text.strip()
-            
-        except (sr.WaitTimeoutError, sr.UnknownValueError):
-            return ""
-        except Exception as e:
-            print(f"[STT ERROR] {e}")
-            return ""
+# =========================================================
+# SESSION STATE
+# =========================================================
 
-# ==========================================
-# MODERN DARK UI (CSS INJECTION)
-# ==========================================
-st.markdown("""
-<style>
-    .stApp {
-        background: #0d0f1b;
-        color: #ffffff;
-        font-family: 'Inter', system-ui, -apple-system, sans-serif;
-    }
-    
-    .header-box {
-        text-align: center;
-        margin-top: 1rem;
-        margin-bottom: 2rem;
-    }
-    
-    .header-title {
-        font-size: 28px;
-        font-weight: 700;
-        color: #ffffff;
-        letter-spacing: -0.5px;
-        margin-bottom: 4px;
-    }
-
-    .header-subtitle {
-        color: #8a8f98;
-        font-size: 14px;
-        margin-top: 0px;
-    }
-
-    .pill-container {
-        display: flex;
-        justify-content: center;
-        margin-bottom: 25px;
-    }
-
-    .status-pill-connecting {
-        background: rgba(255, 193, 7, 0.12);
-        color: #ffca28;
-        border: 1px solid rgba(255, 202, 40, 0.4);
-        padding: 6px 20px;
-        border-radius: 30px;
-        font-size: 13px;
-        font-weight: 600;
-        letter-spacing: 0.3px;
-    }
-
-    .status-pill-connected {
-        background: rgba(46, 204, 113, 0.12);
-        color: #2ecc71;
-        border: 1px solid rgba(46, 204, 113, 0.4);
-        padding: 6px 20px;
-        border-radius: 30px;
-        font-size: 13px;
-        font-weight: 600;
-        letter-spacing: 0.3px;
-    }
-
-    @keyframes pulse-ring-gold {
-        0% { box-shadow: 0 0 0 0 rgba(255, 193, 7, 0.6); }
-        70% { box-shadow: 0 0 0 35px rgba(255, 193, 7, 0); }
-        100% { box-shadow: 0 0 0 0 rgba(255, 193, 7, 0); }
-    }
-    
-    @keyframes pulse-ring-green {
-        0% { box-shadow: 0 0 0 0 rgba(46, 204, 113, 0.6); }
-        70% { box-shadow: 0 0 0 35px rgba(46, 204, 113, 0); }
-        100% { box-shadow: 0 0 0 0 rgba(46, 204, 113, 0); }
-    }
-
-    .circle-card {
-        width: 190px;
-        height: 190px;
-        border-radius: 50%;
-        display: flex;
-        flex-direction: column;
-        justify-content: center;
-        align-items: center;
-        margin: 20px auto 35px auto;
-        border: 3px dashed rgba(85, 214, 255, 0.5);
-        transition: all 0.3s ease;
-    }
-    
-    .gold-theme {
-        background: radial-gradient(circle, #b8860b 0%, #4a3500 100%);
-        animation: pulse-ring-gold 2s infinite;
-    }
-    
-    .green-theme {
-        background: radial-gradient(circle, #27ae60 0%, #114b29 100%);
-        animation: pulse-ring-green 2s infinite;
-    }
-    
-    .circle-card h1 { margin: 0; font-size: 46px; }
-    .circle-card p { margin: 8px 0 0 0; font-size: 12px; font-weight: 700; letter-spacing: 2px; color: #ffffff; }
-
-    #MainMenu {visibility: hidden;}
-    footer {visibility: hidden;}
-    header {visibility: hidden;}
-</style>
-""", unsafe_allow_html=True)
-
-# ==========================================
-# THREE-PHASE STATE ENGINE
-# ==========================================
 if "app_state" not in st.session_state:
-    st.session_state.app_state = "START_RING"
+    st.session_state.app_state = "IDLE"
 
-# RENDER HEADER
-st.markdown("""
-<div class="header-box">
-    <div class="header-title">Nepali Voice RAG Agent</div>
-    <div class="header-subtitle">Real-time hands-free voice assistant (Groq Powered)</div>
-</div>
-""", unsafe_allow_html=True)
+if "needs_greeting" not in st.session_state:
+    st.session_state.needs_greeting = False
 
-# ------------------------------------------
-# PHASE 1: IMMEDIATE RINGTONE TRIGGER
-# ------------------------------------------
-if st.session_state.app_state == "START_RING":
-    st.markdown("""
-        <div class="pill-container">
-            <div class="status-pill-connecting">🟡 Loading AI Agent & Connecting...</div>
-        </div>
-        <div class="circle-card gold-theme">
-            <h1>🔔</h1>
-            <p>CONNECTING</p>
-        </div>
-    """, unsafe_allow_html=True)
-    
-    play_ringtone()
-    time.sleep(0.2)
-    st.session_state.app_state = "LOADING_MODEL"
-    st.rerun()
+if "current_person" not in st.session_state:
+    st.session_state.current_person = None
 
-# ------------------------------------------
-# PHASE 2: MODEL LOADING WHILE RINGING
-# ------------------------------------------
-elif st.session_state.app_state == "LOADING_MODEL":
-    st.markdown("""
-        <div class="pill-container">
-            <div class="status-pill-connecting">🟡 Loading AI Agent & Connecting...</div>
-        </div>
-        <div class="circle-card gold-theme">
-            <h1>🔔</h1>
-            <p>CONNECTING</p>
-        </div>
-    """, unsafe_allow_html=True)
-    
-    load_rag_pipeline()
-    stop_ringtone()
-    
-    st.session_state.app_state = "CONNECTED"
-    st.session_state.needs_greeting = True
-    st.rerun()
 
-# ------------------------------------------
-# PHASE 3: ACTIVE HANDS-FREE VOICE CALL LOOP
-# ------------------------------------------
-elif st.session_state.app_state == "CONNECTED":
-    
-    ui_placeholder = st.empty()
-    with ui_placeholder.container():
-        st.markdown("""
-            <div class="pill-container">
-                <div class="status-pill-connected">🟢 Connected — AI Voice Agent</div>
-            </div>
-            <div class="circle-card green-theme">
-                <h1>📞</h1>
-                <p>LISTENING</p>
-            </div>
-        """, unsafe_allow_html=True)
+# =========================================================
+# AUDIO
+# =========================================================
 
-        col1, col2, col3 = st.columns([1, 2, 1])
-        with col2:
-            if st.button("🔴 Hang Up / Restart Call", use_container_width=True):
-                stop_ringtone()
-                st.session_state.app_state = "START_RING"
-                st.session_state.needs_greeting = False
-                st.rerun()
+def ensure_audio():
 
-    if st.session_state.get("needs_greeting", False):
-        st.session_state.needs_greeting = False
-        play_local_audio("नमस्ते! कनेक्ट भयो, म तपाईंलाई कसरी सहयोग गर्न सक्छु?")
-        st.rerun()
-    else:
-        user_query = listen_continuously()
+    try:
 
-        if user_query:
-            st.toast(f"🗣️ You said: {user_query}")
+        if not pygame.mixer.get_init():
 
-    # =====================================================
-    # CHECK FOR CALL-END INTENT FIRST
-    # =====================================================
+            pygame.mixer.init(
+                frequency=44100,
+                size=-16,
+                channels=2,
+                buffer=512,
+            )
 
-    if is_exit_intent(user_query):
+    except Exception as exc:
 
         print(
-            f"[CALL END] User requested to end conversation: "
-            f"{user_query!r}"
+            f"[AUDIO ERROR] "
+            f"{exc}"
         )
 
-        # Goodbye response
-        goodbye_response = answer_user_query(
+
+def play_ringtone():
+
+    try:
+
+        ensure_audio()
+
+        path = "ringtone.mp3"
+
+        if not os.path.exists(path):
+
+            path = os.path.join(
+                "assets",
+                "ringtone.mp3",
+            )
+
+        if not os.path.exists(path):
+
+            print(
+                "[RINGTONE] File not found."
+            )
+
+            return
+
+        pygame.mixer.music.load(
+            path
+        )
+
+        pygame.mixer.music.play(
+            loops=-1
+        )
+
+    except Exception as exc:
+
+        print(
+            f"[RINGTONE ERROR] "
+            f"{exc}"
+        )
+
+
+def stop_audio():
+
+    try:
+
+        if pygame.mixer.get_init():
+
+            pygame.mixer.music.stop()
+
+    except Exception as exc:
+
+        print(
+            f"[AUDIO ERROR] "
+            f"{exc}"
+        )
+
+
+# =========================================================
+# EDGE TTS
+# =========================================================
+
+async def generate_tts(
+    text: str,
+    output_path: str,
+):
+
+    communicate = edge_tts.Communicate(
+        text=text,
+        voice=TTS_VOICE,
+        rate=TTS_RATE,
+        volume=TTS_VOLUME,
+        pitch=TTS_PITCH,
+    )
+
+    await communicate.save(
+        output_path
+    )
+
+
+def create_tts_audio(
+    text: str,
+):
+
+    temp_file = tempfile.NamedTemporaryFile(
+        suffix=".mp3",
+        delete=False,
+    )
+
+    temp_file.close()
+
+    output_path = temp_file.name
+
+    try:
+
+        asyncio.run(
+            generate_tts(
+                text,
+                output_path,
+            )
+        )
+
+        return output_path
+
+    except Exception as exc:
+
+        print(
+            f"[TTS ERROR] "
+            f"{exc}"
+        )
+
+        try:
+
+            os.remove(
+                output_path
+            )
+
+        except OSError:
+            pass
+
+        return None
+
+
+def speak(
+    text: str,
+):
+
+    if text is None:
+        return
+
+    text = str(text).strip()
+
+    if not text:
+
+        print(
+            "[TTS] Empty response ignored."
+        )
+
+        return
+
+    ensure_audio()
+
+    audio_path = None
+
+    try:
+
+        start = time.perf_counter()
+
+        print(
+            f"[TTS] Voice: "
+            f"{TTS_VOICE}"
+        )
+
+        print(
+            f"[TTS] Text: "
+            f"{text}"
+        )
+
+        audio_path = create_tts_audio(
+            text
+        )
+
+        if not audio_path:
+
+            return
+
+        print(
+            f"[TTS] Generated in "
+            f"{time.perf_counter() - start:.3f}s"
+        )
+
+        pygame.mixer.music.stop()
+
+        pygame.mixer.music.load(
+            audio_path
+        )
+
+        pygame.mixer.music.play()
+
+        clock = pygame.time.Clock()
+
+        while pygame.mixer.music.get_busy():
+
+            clock.tick(20)
+
+        print(
+            "[TTS] Playback complete."
+        )
+
+    except Exception as exc:
+
+        print(
+            f"[TTS PLAYBACK ERROR] "
+            f"{exc}"
+        )
+
+    finally:
+
+        if audio_path:
+
+            try:
+
+                if os.path.exists(
+                    audio_path
+                ):
+
+                    os.remove(
+                        audio_path
+                    )
+
+            except OSError:
+                pass
+
+
+# =========================================================
+# GOOGLE STT
+# =========================================================
+
+IGNORED_UTTERANCES = {
+    "uh",
+    "um",
+    "hmm",
+    "hm",
+    "mm",
+    "mmm",
+    "हम्म",
+    "ह्म्म",
+    "अँ",
+    "ए",
+    "ओ",
+    "आ",
+    "उम्",
+    "हूँ",
+    "हुम्",
+}
+
+
+def listen():
+
+    recognizer = sr.Recognizer()
+
+    recognizer.dynamic_energy_threshold = True
+    recognizer.pause_threshold = 0.8
+    recognizer.phrase_threshold = 0.3
+    recognizer.non_speaking_duration = 0.5
+
+    try:
+
+        with sr.Microphone() as source:
+
+            print(
+                "[MIC] Listening..."
+            )
+
+            recognizer.adjust_for_ambient_noise(
+                source,
+                duration=0.3,
+            )
+
+            try:
+
+                audio = recognizer.listen(
+                    source,
+                    timeout=7.0,
+                    phrase_time_limit=15.0,
+                )
+
+            except sr.WaitTimeoutError:
+
+                print(
+                    "[MIC] Silence / timeout. "
+                    "No request sent."
+                )
+
+                return ""
+
+    except Exception as exc:
+
+        print(
+            f"[MIC ERROR] "
+            f"{exc}"
+        )
+
+        return ""
+
+    try:
+
+        start = time.perf_counter()
+
+        print(
+            "[STT] Processing..."
+        )
+
+        text = recognizer.recognize_google(
+            audio,
+            language="ne-NP",
+        )
+
+        if text is None:
+
+            return ""
+
+        text = text.strip()
+
+        if not text:
+
+            print(
+                "[STT] Empty transcription. "
+                "No request sent."
+            )
+
+            return ""
+
+        if len(text) < 2:
+
+            print(
+                f"[STT] Too short: "
+                f"{text!r}"
+            )
+
+            return ""
+
+        if text.lower() in IGNORED_UTTERANCES:
+
+            print(
+                f"[STT] Noise ignored: "
+                f"{text!r}"
+            )
+
+            return ""
+
+        print(
+            f"[STT] Valid: "
+            f"{text!r}"
+        )
+
+        print(
+            f"[STT] Time: "
+            f"{time.perf_counter() - start:.3f}s"
+        )
+
+        return text
+
+    except sr.UnknownValueError:
+
+        print(
+            "[STT] Speech not understood."
+        )
+
+        return ""
+
+    except sr.RequestError as exc:
+
+        print(
+            f"[STT ERROR] "
+            f"{exc}"
+        )
+
+        return ""
+
+    except Exception as exc:
+
+        print(
+            f"[STT ERROR] "
+            f"{exc}"
+        )
+
+        return ""
+
+
+# =========================================================
+# UI
+# =========================================================
+
+st.markdown(
+    """
+<style>
+
+.stApp {
+    background: #0b0d12;
+}
+
+[data-testid="stHeader"] {
+    background: transparent;
+}
+
+#MainMenu,
+footer {
+    visibility: hidden;
+}
+
+.block-container {
+    max-width: 620px;
+    padding-top: 40px;
+}
+
+.service-title {
+    text-align: center;
+    color: #f5f5f7;
+    font-size: 30px;
+    font-weight: 700;
+    letter-spacing: -0.8px;
+    margin-bottom: 8px;
+}
+
+.service-subtitle {
+    text-align: center;
+    color: #777e8a;
+    font-size: 13px;
+    margin-bottom: 40px;
+}
+
+.call-status {
+    text-align: center;
+    color: #61d68e;
+    font-size: 13px;
+    font-weight: 600;
+    margin-top: 12px;
+    margin-bottom: 20px;
+}
+
+.call-status.gold {
+    color: #dfb85e;
+}
+
+.call-status.red {
+    color: #df6871;
+}
+
+.state-icon {
+    text-align: center;
+    font-size: 64px;
+    line-height: 1;
+    margin: 30px 0 15px 0;
+}
+
+.state-title {
+    text-align: center;
+    color: #f1f2f5;
+    font-size: 25px;
+    font-weight: 650;
+    margin-bottom: 7px;
+}
+
+.state-description {
+    text-align: center;
+    color: #7a818d;
+    font-size: 13px;
+    line-height: 1.6;
+    margin-bottom: 35px;
+}
+
+.stButton > button {
+    min-height: 54px;
+    border-radius: 15px;
+    font-weight: 600;
+}
+
+.start-call button {
+    background: #f0f1f4 !important;
+    color: #0b0d12 !important;
+    border: none !important;
+}
+
+.end-call button {
+    background: #c93f49 !important;
+    color: white !important;
+    border: none !important;
+}
+
+.end-call button:hover {
+    background: #d34a54 !important;
+}
+
+.waveform {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 4px;
+    height: 90px;
+    margin: 10px 0 30px 0;
+}
+
+.bar {
+    width: 4px;
+    border-radius: 10px;
+    background: #9da3af;
+    animation: wave 1s ease-in-out infinite;
+}
+
+.bar:nth-child(1) {
+    height: 20px;
+}
+
+.bar:nth-child(2) {
+    height: 35px;
+    animation-delay: .1s;
+}
+
+.bar:nth-child(3) {
+    height: 50px;
+    animation-delay: .2s;
+}
+
+.bar:nth-child(4) {
+    height: 68px;
+    animation-delay: .3s;
+}
+
+.bar:nth-child(5) {
+    height: 82px;
+    animation-delay: .4s;
+}
+
+.bar:nth-child(6) {
+    height: 60px;
+    animation-delay: .3s;
+}
+
+.bar:nth-child(7) {
+    height: 74px;
+    animation-delay: .2s;
+}
+
+.bar:nth-child(8) {
+    height: 45px;
+    animation-delay: .1s;
+}
+
+.bar:nth-child(9) {
+    height: 28px;
+}
+
+@keyframes wave {
+
+    0%,
+    100% {
+        transform: scaleY(.45);
+        opacity: .35;
+    }
+
+    50% {
+        transform: scaleY(1);
+        opacity: .9;
+    }
+}
+
+</style>
+""",
+    unsafe_allow_html=True,
+)
+
+
+# =========================================================
+# HEADER
+# =========================================================
+
+st.markdown(
+    '<div class="service-title">'
+    'Nepali Information Service'
+    '</div>',
+    unsafe_allow_html=True,
+)
+
+st.markdown(
+    '<div class="service-subtitle">'
+    'Automated telephone information service'
+    '</div>',
+    unsafe_allow_html=True,
+)
+
+
+# =========================================================
+# IDLE
+# =========================================================
+
+if st.session_state.app_state == "IDLE":
+
+    st.markdown(
+        '<div class="state-icon">☎️</div>',
+        unsafe_allow_html=True,
+    )
+
+    st.markdown(
+        '<div class="state-title">'
+        'Ready to call'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+    st.markdown(
+        '<div class="state-description">'
+        'Ask about people and information available '
+        'in the connected documents.'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+    col1, col2, col3 = st.columns(
+        [1, 1.5, 1]
+    )
+
+    with col2:
+
+        st.markdown(
+            '<div class="start-call">',
+            unsafe_allow_html=True,
+        )
+
+        start_call = st.button(
+            "☎️  Start Call",
+            use_container_width=True,
+        )
+
+        st.markdown(
+            "</div>",
+            unsafe_allow_html=True,
+        )
+
+    if start_call:
+
+        st.session_state.app_state = (
+            "CONNECTING"
+        )
+
+        st.session_state.needs_greeting = True
+
+        st.session_state.current_person = None
+
+        st.rerun()
+
+
+# =========================================================
+# CONNECTING
+# =========================================================
+
+elif st.session_state.app_state == "CONNECTING":
+
+    st.markdown(
+        '<div class="state-icon">🔔</div>',
+        unsafe_allow_html=True,
+    )
+
+    st.markdown(
+        '<div class="state-title">'
+        'Connecting'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+    st.markdown(
+        '<div class="call-status gold">'
+        'Please wait...'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+    play_ringtone()
+
+    time.sleep(0.3)
+
+    try:
+
+        load_rag_pipeline()
+
+    except Exception as exc:
+
+        print(
+            f"[PIPELINE ERROR] "
+            f"{exc}"
+        )
+
+    finally:
+
+        stop_audio()
+
+    st.session_state.app_state = (
+        "CONNECTED"
+    )
+
+    st.session_state.needs_greeting = True
+
+    st.rerun()
+
+
+# =========================================================
+# CONNECTED
+# =========================================================
+
+elif st.session_state.app_state == "CONNECTED":
+
+    # -----------------------------------------------------
+    # GREETING
+    # -----------------------------------------------------
+
+    if st.session_state.needs_greeting:
+
+        st.session_state.needs_greeting = False
+
+        st.markdown(
+            '<div class="state-icon">☎️</div>',
+            unsafe_allow_html=True,
+        )
+
+        st.markdown(
+            '<div class="state-title">'
+            'Connected'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+
+        st.markdown(
+            '<div class="call-status">'
+            'Call in progress'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+
+        speak(
+            "नमस्ते! स्वचालित सूचना सेवामा स्वागत छ। "
+            "तपाईं के जानकारी चाहनुहुन्छ?"
+        )
+
+        st.rerun()
+
+    # -----------------------------------------------------
+    # LISTENING
+    # -----------------------------------------------------
+
+    st.markdown(
+        '<div class="state-icon">🎙️</div>',
+        unsafe_allow_html=True,
+    )
+
+    st.markdown(
+        '<div class="state-title">'
+        'Listening'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+    st.markdown(
+        '<div class="state-description">'
+        'Speak naturally'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+    st.markdown(
+        """
+        <div class="waveform">
+            <div class="bar"></div>
+            <div class="bar"></div>
+            <div class="bar"></div>
+            <div class="bar"></div>
+            <div class="bar"></div>
+            <div class="bar"></div>
+            <div class="bar"></div>
+            <div class="bar"></div>
+            <div class="bar"></div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # -----------------------------------------------------
+    # END CALL
+    # -----------------------------------------------------
+
+    col1, col2, col3 = st.columns(
+        [1, 1.4, 1]
+    )
+
+    with col2:
+
+        st.markdown(
+            '<div class="end-call">',
+            unsafe_allow_html=True,
+        )
+
+        end_call = st.button(
+            "🔴  End Call",
+            use_container_width=True,
+        )
+
+        st.markdown(
+            "</div>",
+            unsafe_allow_html=True,
+        )
+
+    if end_call:
+
+        stop_audio()
+
+        st.session_state.app_state = (
+            "CALL_ENDED"
+        )
+
+        st.session_state.needs_greeting = False
+
+        st.session_state.current_person = None
+
+        st.rerun()
+
+    # -----------------------------------------------------
+    # LISTEN
+    # -----------------------------------------------------
+
+    user_query = listen()
+
+    # Empty/noisy input never reaches RAG.
+    if not user_query:
+
+        print(
+            "[CALL] No valid text. "
+            "Skipping RAG/Groq."
+        )
+
+        time.sleep(0.05)
+
+        st.rerun()
+
+    print(
+        f"[CALL] Query: "
+        f"{user_query!r}"
+    )
+
+    # -----------------------------------------------------
+    # EXIT
+    # -----------------------------------------------------
+
+    if is_exit_intent(
+        user_query
+    ):
+
+        st.markdown(
+            '<div class="state-icon">👋</div>',
+            unsafe_allow_html=True,
+        )
+
+        st.markdown(
+            '<div class="state-title">'
+            'Ending call'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+
+        response = answer_user_query(
             user_query
         )
 
-        # Speak goodbye
-        play_local_audio(
-            goodbye_response
+        if response:
+
+            speak(
+                response
+            )
+
+        stop_audio()
+
+        st.session_state.app_state = (
+            "CALL_ENDED"
         )
 
-        # Stop any active audio
-        stop_ringtone()
+        st.session_state.needs_greeting = False
 
-        # Change state so the listening loop stops
-        st.session_state.app_state = "CALL_ENDED"
+        st.session_state.current_person = None
 
         st.rerun()
 
-    # =====================================================
-    # NORMAL QUERY
-    # =====================================================
+    # -----------------------------------------------------
+    # THINKING
+    # -----------------------------------------------------
 
-    with ui_placeholder.container():
-        st.markdown("""
-            <div class="pill-container">
-                <div class="status-pill-connecting">
-                    🟡 Thinking / Processing Query...
-                </div>
-            </div>
-
-            <div class="circle-card gold-theme">
-                <h1>🤖</h1>
-                <p>THINKING</p>
-            </div>
-        """, unsafe_allow_html=True)
-
-    # Query RAG + Groq
-    ai_response = answer_user_query(
-        user_query
+    st.markdown(
+        '<div class="state-icon">◌</div>',
+        unsafe_allow_html=True,
     )
 
-    # Speak response
-    play_local_audio(
-        ai_response
+    st.markdown(
+        '<div class="state-title">'
+        'One moment'
+        '</div>',
+        unsafe_allow_html=True,
     )
+
+    st.markdown(
+        '<div class="call-status gold">'
+        'Finding the information'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+    # -----------------------------------------------------
+    # RAG + GROQ
+    # -----------------------------------------------------
+
+    start = time.perf_counter()
+
+    try:
+
+        response = answer_user_query(
+            user_query
+        )
+
+    except Exception as exc:
+
+        print(
+            f"[RAG ERROR] "
+            f"{exc}"
+        )
+
+        response = (
+            "माफ गर्नुहोस्, अहिले "
+            "जानकारी प्राप्त गर्न समस्या भयो।"
+        )
+
+    print(
+        f"[RAG] Time: "
+        f"{time.perf_counter() - start:.3f}s"
+    )
+
+    # -----------------------------------------------------
+    # SPEAK
+    # -----------------------------------------------------
+
+    if response:
+
+        st.markdown(
+            '<div class="state-icon">🔊</div>',
+            unsafe_allow_html=True,
+        )
+
+        st.markdown(
+            '<div class="state-title">'
+            'Speaking'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+
+        speak(
+            response
+        )
+
+    else:
+
+        print(
+            "[RAG] Empty response. "
+            "TTS skipped."
+        )
+
+    # -----------------------------------------------------
+    # LISTEN AGAIN
+    # -----------------------------------------------------
 
     st.rerun()
+
+
+# =========================================================
+# CALL ENDED
+# =========================================================
+
+elif st.session_state.app_state == "CALL_ENDED":
+
+    st.markdown(
+        '<div class="state-icon">📴</div>',
+        unsafe_allow_html=True,
+    )
+
+    st.markdown(
+        '<div class="state-title">'
+        'Call ended'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+    st.markdown(
+        '<div class="state-description">'
+        'धन्यवाद। फेरि भेटौँला।'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+    col1, col2, col3 = st.columns(
+        [1, 1.5, 1]
+    )
+
+    with col2:
+
+        st.markdown(
+            '<div class="start-call">',
+            unsafe_allow_html=True,
+        )
+
+        new_call = st.button(
+            "☎️  Start New Call",
+            use_container_width=True,
+        )
+
+        st.markdown(
+            "</div>",
+            unsafe_allow_html=True,
+        )
+
+    if new_call:
+
+        st.session_state.app_state = (
+            "CONNECTING"
+        )
+
+        st.session_state.needs_greeting = True
+
+        st.session_state.current_person = None
+
+        st.rerun()
