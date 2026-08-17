@@ -8,6 +8,26 @@ from src.rag.rag_engine import answer_user_query, is_exit_intent, load_rag_pipel
 os.environ["TRANSFORMERS_VERBOSITY"] = "error"
 warnings.filterwarnings("ignore")
 
+
+import re
+
+# Pronunciation Dictionary for English Tech Terms
+PRONUNCIATION_FIXES = {
+    "JavaScript": "जाभास्क्रिप्ट",
+    "TypeScript": "टाइपस्क्रिप्ट",
+    "Node.js": "नोड जेएस",
+    "REST API": "रेस्ट एपीआई",
+    "API": "एपीआई",
+    "React": "रियाक्ट",
+    "MongoDB": "मङ्गो डिबी",
+    "PostgreSQL": "पोस्टग्रेस एसक्युएल",
+    "RAG": "र्याग",
+    "UI": "युआई",
+    "UX": "युएक्स",
+    "App": "एप",
+    "Software": "सफ्टवेयर"
+}
+
 st.set_page_config(
     page_title="Nepali Information Service", 
     page_icon="☎️", 
@@ -57,10 +77,15 @@ def stop_audio():
 async def generate_tts(text, output_path):
     comm = edge_tts.Communicate(text, voice=TTS_VOICE, rate=TTS_RATE, volume=TTS_VOLUME, pitch=TTS_PITCH)
     await comm.save(output_path)
-
 def speak(text):
     if not text or not str(text).strip(): return
     text = str(text).strip()
+    
+    # --- PRONUNCIATION FIX: Swap English text for Devanagari phonetics ---
+    for eng_word, nep_phonetic in PRONUNCIATION_FIXES.items():
+        # Using regex to ensure we only replace whole words, ignoring case
+        text = re.sub(rf"(?i)\b{re.escape(eng_word)}\b", nep_phonetic, text)
+
     ensure_audio()
     temp_file = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
     output_path = temp_file.name
@@ -80,7 +105,6 @@ def speak(text):
         if os.path.exists(output_path):
             try: os.remove(output_path)
             except OSError: pass
-
 # Google Speech-to-Text
 def listen():
     r = sr.Recognizer()
