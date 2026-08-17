@@ -1,16 +1,16 @@
-# 🎙️ RAG Voice-to-Voice AI Assistant (Nepali)
+# 🎙️ Nepali Information Service (Voice-to-Voice RAG Assistant)
 
-An interactive, low-latency Voice-to-Voice AI Assistant built with **Streamlit**, **Hybrid RAG** (ChromaDB + BM25), and **Ollama**. Designed to process and answer user queries from custom local Nepali PDF documents through a telephone call interface.
+An interactive, ultra-low-latency Voice-to-Voice AI Assistant built with **Streamlit**, **Hybrid RAG** (ChromaDB + BM25), and **Groq**. Designed to process and answer user queries from custom local Nepali text documents through a simulated telephone call interface.
 
 ---
 
 ## 🚀 Features
 
-* **🎙️ Voice & Text Input:** Transcribes spoken Nepali queries using Google Speech Recognition (`ne-NP`) or accepts text inputs.
-* **🔍 Hybrid RAG Retrieval:** Combines dense vector search (ChromaDB with multilingual embeddings) and sparse keyword search (BM25) for high retrieval precision (< 0.1s latency).
-* **🦙 Local & Private Generation:** Employs **Ollama** (`llama3:latest`) for fast, local LLM response synthesis without data leaking or cloud dependencies.
-* **🔊 Text-to-Speech (TTS):** Converts Nepali text answers into audio stream responses using `gTTS`.
-* **📞 Call Interface Simulation:** Features a phone call UI built with Streamlit.
+* **🎙️ Voice & Text Input:** Transcribes spoken Nepali queries using Google Speech Recognition (`ne-NP`).
+* **🔍 Hybrid RAG Retrieval:** Combines dense vector search (ChromaDB with multilingual embeddings) and sparse keyword search (BM25) for high retrieval precision.
+* **⚡ Blazing Fast Generation:** Employs the **Groq API** for lightning-fast LLM response synthesis[cite: 2].
+* **🔊 Natural Text-to-Speech (TTS):** Converts Nepali text answers into natural audio stream responses using **Edge TTS** (`ne-NP-SagarNeural`) with automated phonetic transliteration for English technical terms.
+* **📞 Call Interface Simulation:** Features an interactive phone call UI built natively in Streamlit with dynamic waveform animations[cite: 1].
 
 ---
 
@@ -18,15 +18,15 @@ An interactive, low-latency Voice-to-Voice AI Assistant built with **Streamlit**
 
 | Component | Technology |
 | :--- | :--- |
-| **Frontend / UI** | [Streamlit](https://streamlit.io/) |
+| **Frontend / UI** | [Streamlit](https://streamlit.io/)[cite: 1] |
 | **Package Manager** | [`uv`](https://github.com/astral-sh/uv) / `pip` |
-| **Speech-to-Text (STT)** | `SpeechRecognition` (Google Speech API — `ne-NP`) |
-| **Text-to-Speech (TTS)** | `gTTS` (Nepali language model) |
-| **Embeddings** | `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` |
-| **Vector Database** | [ChromaDB](https://www.trychroma.com/) |
-| **Keyword Search** | BM25 (`rank_bm25` / `langchain_community.retrievers`) |
-| **Local LLM** | [Ollama](https://ollama.com/) (`llama3:latest`) |
-| **Audio Processing** | `pydub` + `ffmpeg` |
+| **Speech-to-Text (STT)** | `SpeechRecognition` (Google Speech API — `ne-NP`)[cite: 1] |
+| **Text-to-Speech (TTS)** | `edge-tts` (Nepali Voice: Sagar)[cite: 1] |
+| **Embeddings** | `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`[cite: 2] |
+| **Vector Database** | [ChromaDB](https://www.trychroma.com/)[cite: 2] |
+| **Keyword Search** | BM25 (`rank_bm25` / `langchain_community.retrievers`)[cite: 2] |
+| **LLM Inference** | [Groq](https://groq.com/) API[cite: 2] |
+| **Audio Playback** | `pygame`[cite: 1] |
 
 ---
 
@@ -35,13 +35,9 @@ An interactive, low-latency Voice-to-Voice AI Assistant built with **Streamlit**
 Before getting started, make sure you have the following installed:
 
 1. **Python 3.10+**
-2. **FFmpeg**: Required by `pydub` for processing audio streams.
+2. **Groq API Key**: An active API key from Groq to run LLM inference[cite: 2].
+3. **FFmpeg**: Required for audio processing.
    * *Windows:* Install via `winget install FFmpeg` or download from the official site and add it to your system `PATH`.
-3. **Ollama**: Installed and running locally.
-   * Pull the model:
-     ```powershell
-     ollama pull llama3:latest
-     ```
 
 ---
 
@@ -50,77 +46,59 @@ Before getting started, make sure you have the following installed:
 ### 1. Clone the Repository
 
 ```powershell
-git clone https://github.com/NischalGirii/ai-system.git
+git clone [https://github.com/nischalgirii/ai-system.git](https://github.com/nischalgirii/ai-system.git)
 cd ai-system
-```
 
 ### 2. Set Up Virtual Environment
 
-Using **`uv`** *(Recommended)*:
-```powershell
+Using uv:
 uv venv
 .\.venv\Scripts\Activate.ps1
-```
 
-Or using standard Python `venv`:
-```powershell
+Or using standard Python venv:
+
+PowerShell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-```
 
 ### 3. Install Dependencies
 
-Using `uv`:
-```powershell
+Using uv:
 uv pip install -r requirements.txt
-```
 
-Or using `pip`:
-```powershell
+Or using pip:
 pip install -r requirements.txt
-```
 
----
+### 4. Configure Environment Variables
+Create a .env file in the root directory and add your Groq API Key:
+GROQ_API_KEY=your_groq_api_key_here
 
-## 📁 Directory Structure
-
-```text
+### 📁 Directory Structure
 ai-system/
-├── app.py                      # Main Streamlit web application & speech handling
+├── app.py                 # Main Streamlit web application & UI/TTS handling[cite: 1]
+├── ingest.py              # Text chunking, embedding, and hybrid index builder
 ├── src/
-│   ├── ingestion/
-│   │   ├── extractor.py        # PDF text extraction & OCR preprocessing
-│   │   └── embedder.py         # Vector embeddings & BM25 indexing pipeline
 │   └── rag/
-│       └── rag_engine.py       # Cached Hybrid RAG pipeline & Ollama integration
-├── requirements.txt            # Project dependencies
-├── .gitignore                  # Git ignore rules for virtual environments & model caches
-└── README.md                   # Project documentation
-```
+│       └── rag_engine.py  # Cached Hybrid RAG pipeline & Groq integration[cite: 2]
+├── data/
+│   ├── arjun_bio.txt      # Clean text source for knowledge base
+│   ├── chroma_db/         # Persisted vector database (generated)[cite: 2]
+│   └── bm25_retriever.pkl # Persisted keyword index (generated)[cite: 2]
+├── requirements.txt       # Project dependencies
+├── .env                   # Environment variables (API Keys)
+└── README.md              # Project documentation
 
----
+### How to Run
+1. Ingest Documents (Build the Knowledge Base)
+Place your clean text source files inside the data/ folder, then run the ingestion script to build the ChromaDB and BM25 indexes:
 
-## 🏃‍♂️ How to Run
+python ingest.py
 
-### 1. Ingest Documents (If building index from scratch)
-Place your target PDF in the `data/` directory and run the embedding script:
-```powershell
-python -m src.ingestion.embedder
-```
+2. Launch the Web Application
+Start the Streamlit server[cite: 1]:
 
-### 2. Launch the Web Application
-Start the Streamlit server:
-```powershell
 streamlit run app.py
-```
 
-3. Open `http://localhost:8501` in your browser.
-4. Enter a phone number in the sidebar and click **"Call"** to start the voice interaction session.
+1. Open http://localhost:8501 in your browser.
 
----
-
-## ⚡ Performance Optimizations
-
-* **Instant Document Retrieval:** Pre-calculated BM25 indices saved via pickle and persisted Chroma DB vectors loaded directly into system RAM using Streamlit's `@st.cache_resource`.
-* **Direct Instruction Synthesis:** Utilizes standard instruct-tuned models (`llama3:latest`) to eliminate multi-minute chain-of-thought "thinking" loops on CPU hardware.
-* **Strict Memory Isolation:** Heavy model weights, vector embeddings, and local virtual environments (`.venv`) are ignored by Git via `.gitignore` to keep the repository lightweight.
+2. Click "☎️ Start Call" to initiate the connection and speak naturally into your microphone when prompted[cite: 1].
