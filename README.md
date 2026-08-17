@@ -92,12 +92,12 @@ ai-system/
 1. Ingest Documents (Build the Knowledge Base)
 Place your clean text source files inside the data/ folder, then run the ingestion script to build the ChromaDB and BM25 indexes:
 
-python ingest.py
+    python ingest.py
 
 2. Launch the Web Application
 Start the Streamlit server[cite: 1]:
 
-streamlit run app.py
+    streamlit run app.py
 
 1. Open http://localhost:8501 in your browser.
 
