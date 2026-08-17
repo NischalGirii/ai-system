@@ -45,7 +45,7 @@ Before getting started, make sure you have the following installed:
 
 ### 1. Clone the Repository
 
-```powershell
+
 git clone [https://github.com/nischalgirii/ai-system.git](https://github.com/nischalgirii/ai-system.git)
 cd ai-system
 
