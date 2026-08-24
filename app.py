@@ -1,4 +1,4 @@
-import os, time, asyncio, tempfile, warnings, pygame
+import os, time, asyncio, tempfile, warnings, pygame, re
 import speech_recognition as sr
 import streamlit as st
 import edge_tts
@@ -7,9 +7,6 @@ from src.rag.rag_engine import answer_user_query, is_exit_intent, load_rag_pipel
 
 os.environ["TRANSFORMERS_VERBOSITY"] = "error"
 warnings.filterwarnings("ignore")
-
-
-import re
 
 # Pronunciation Dictionary for English Tech Terms
 PRONUNCIATION_FIXES = {
@@ -49,7 +46,7 @@ def set_state(state, needs_greeting=False, current_person=None):
     st.session_state.current_person = current_person
     st.rerun()
 
-# Audio Helper Functions
+# --- Audio Helper Functions (Hardware Audio via Pygame) ---
 def ensure_audio():
     try:
         if not pygame.mixer.get_init():
@@ -77,38 +74,49 @@ def stop_audio():
 async def generate_tts(text, output_path):
     comm = edge_tts.Communicate(text, voice=TTS_VOICE, rate=TTS_RATE, volume=TTS_VOLUME, pitch=TTS_PITCH)
     await comm.save(output_path)
+
 def speak(text):
     if not text or not str(text).strip(): return
     text = str(text).strip()
     
-    # --- PRONUNCIATION FIX: Swap English text for Devanagari phonetics ---
+    # Improved regex logic to only swap exact word matches (ignoring case)
     for eng_word, nep_phonetic in PRONUNCIATION_FIXES.items():
-        # Using regex to ensure we only replace whole words, ignoring case
         text = re.sub(rf"(?i)\b{re.escape(eng_word)}\b", nep_phonetic, text)
 
     ensure_audio()
-    temp_file = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
-    output_path = temp_file.name
-    temp_file.close()
+    
+    # Safe tempfile management
+    fd, output_path = tempfile.mkstemp(suffix=".mp3")
+    os.close(fd)
 
     try:
         asyncio.run(generate_tts(text, output_path))
         pygame.mixer.music.stop()
         pygame.mixer.music.load(output_path)
         pygame.mixer.music.play()
+        
+        # Block thread while speaking to prevent the microphone from hearing the TTS
         clock = pygame.time.Clock()
         while pygame.mixer.music.get_busy():
             clock.tick(20)
+            
     except Exception as exc:
         print(f"[TTS ERROR] {exc}")
     finally:
+        # Guarantee cleanup of the temporary file
+        pygame.mixer.music.unload()
         if os.path.exists(output_path):
             try: os.remove(output_path)
             except OSError: pass
-# Google Speech-to-Text
+
+# --- Hardware Speech-to-Text Listener ---
 def listen():
     r = sr.Recognizer()
-    r.dynamic_energy_threshold, r.pause_threshold, r.phrase_threshold, r.non_speaking_duration = True, 0.8, 0.3, 0.5
+    r.dynamic_energy_threshold = True
+    r.pause_threshold = 0.8
+    r.phrase_threshold = 0.3
+    r.non_speaking_duration = 0.5
+    
     try:
         with sr.Microphone() as source:
             print("[MIC] Listening...")
@@ -125,7 +133,7 @@ def listen():
         print(f"[STT ERROR] {exc}")
     return ""
 
-# UI Styling
+# --- UI Styling (Original CSS Preserved) ---
 st.markdown("""
 <style>
 .stApp { background: #0b0d12; }
@@ -156,6 +164,10 @@ st.markdown('<div class="service-title">Nepali Information Service</div><div cla
 
 state = st.session_state.app_state
 
+# =====================================================================
+# STATE MACHINE LOGIC
+# =====================================================================
+
 if state == "IDLE":
     st.markdown('<div class="state-icon">☎️</div><div class="state-title">Ready to call</div><div class="state-description">Ask about people and information available in the connected documents.</div>', unsafe_allow_html=True)
     _, col2, _ = st.columns([1, 1.5, 1])
@@ -169,9 +181,12 @@ elif state == "CONNECTING":
     st.markdown('<div class="state-icon">🔔</div><div class="state-title">Connecting</div><div class="call-status gold">Please wait...</div>', unsafe_allow_html=True)
     play_ringtone()
     time.sleep(0.3)
-    try: load_rag_pipeline()
-    except Exception as exc: print(f"[PIPELINE ERROR] {exc}")
-    finally: stop_audio()
+    try: 
+        load_rag_pipeline()
+    except Exception as exc: 
+        print(f"[PIPELINE ERROR] {exc}")
+    finally: 
+        stop_audio()
     set_state("CONNECTED", needs_greeting=True)
 
 elif state == "CONNECTED":
@@ -181,6 +196,7 @@ elif state == "CONNECTED":
         speak("नमस्ते! स्वचालित सूचना सेवामा स्वागत छ। तपाईं के जानकारी चाहनुहुन्छ?")
         st.rerun()
 
+    # Original Waveform UI
     st.markdown('<div class="state-icon">🎙️</div><div class="state-title">Listening</div><div class="state-description">Speak naturally</div>', unsafe_allow_html=True)
     st.markdown('<div class="waveform">' + '<div class="bar"></div>'*9 + '</div>', unsafe_allow_html=True)
 
@@ -192,7 +208,9 @@ elif state == "CONNECTED":
             set_state("CALL_ENDED")
         st.markdown('</div>', unsafe_allow_html=True)
 
+    # Hardware listener handles audio capture hands-free
     user_query = listen()
+    
     if not user_query:
         time.sleep(0.05)
         st.rerun()
@@ -215,6 +233,7 @@ elif state == "CONNECTED":
     if response:
         st.markdown('<div class="state-icon">🔊</div><div class="state-title">Speaking</div>', unsafe_allow_html=True)
         speak(response)
+    
     st.rerun()
 
 elif state == "CALL_ENDED":

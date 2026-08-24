@@ -1,121 +1,208 @@
+# 🎙️ Voice‑to‑Voice RAG Assistant (Nepali)
 
-# 🎙️ Nepali Information Service (Voice-to-Voice RAG Assistant)
-
-An interactive, ultra-low-latency Voice-to-Voice AI Assistant built with **Streamlit**, **Hybrid RAG** (ChromaDB + BM25), and **Groq**. Designed to process and answer user queries from custom local Nepali text documents through a simulated telephone call interface.
-
----
-
-## 🚀 Features
-
-* **🎙️ Voice & Text Input:** Transcribes spoken Nepali queries using Google Speech Recognition (`ne-NP`).
-* **🔍 Hybrid RAG Retrieval:** Combines dense vector search (ChromaDB with multilingual embeddings) and sparse keyword search (BM25) for high retrieval precision.
-* **⚡ Blazing Fast Generation:** Employs the **Groq API** for lightning-fast LLM response synthesis.
-* **🔊 Natural Text-to-Speech (TTS):** Converts Nepali text answers into natural audio stream responses using **Edge TTS** (`ne-NP-SagarNeural`) with automated phonetic transliteration for English technical terms.
-* **📞 Call Interface Simulation:** Features an interactive phone call UI built natively in Streamlit with dynamic waveform animations.
+> A production‑ready voice assistant that answers biographical and factual queries in Nepali, using a hybrid RAG pipeline (Vector + BM25) and a Groq LLM, all accessible via phone (Twilio).
 
 ---
 
-## 🏗️ Tech Stack
+## 📌 Overview
 
-| Component | Technology |
+This project implements a **voice‑in / voice‑out** assistant that can be called via a phone number. It:
+
+- Accepts spoken Nepali queries through a Twilio phone number.
+- Transcribes speech using Twilio's built‑in STT.
+- Retrieves relevant information from a local knowledge base using a hybrid retrieval system (ChromaDB vector search + BM25).
+- Generates a precise, conversational answer in Nepali using Groq's LLM.
+- Speaks the answer back using **edge‑tts** (natural‑sounding Nepali voice).
+- Supports multi‑turn conversations (follow‑up questions, person disambiguation).
+
+---
+
+## ✨ Key Features
+
+- **📞 Phone Integration:** Works with any phone – just call your Twilio number.
+- **🧠 Hybrid RAG:** Combines dense retrieval (ChromaDB) and sparse retrieval (BM25) for high‑accuracy context.
+- **🗣️ Natural Nepali TTS:** Uses Azure's `ne‑NP‑HemkalaNeural` voice via `edge‑tts`.
+- **💬 Conversational Memory:** Remembers the current person being discussed (e.g., "अर्जुन शर्मा") to handle follow‑up pronouns.
+- **🛡️ Resilient:** Graceful fallbacks for API errors, TTS failures, or out‑of‑scope questions.
+- **⚡ Fast & Scalable:** Asynchronous FastAPI server handles concurrent calls.
+
+---
+
+## 🛠️ Tech Stack
+
+| Component | Technology / Library |
 | :--- | :--- |
-| **Frontend / UI** | [Streamlit](https://streamlit.io/) |
-| **Package Manager** | [`uv`](https://github.com/astral-sh/uv) / `pip` |
-| **Speech-to-Text (STT)** | `SpeechRecognition` (Google Speech API — `ne-NP`) |
-| **Text-to-Speech (TTS)** | `edge-tts` (Nepali Voice: Sagar) |
+| **Backend API** | [FastAPI](https://fastapi.tiangolo.com/) |
+| **Voice Gateway** | [Twilio](https://www.twilio.com/) (Voice, Speech‑to‑Text) |
+| **Text‑to‑Speech** | [`edge‑tts`](https://github.com/rany2/edge-tts) (Azure Neural TTS) |
+| **Vector Store** | [ChromaDB](https://www.trychroma.com/) |
+| **Sparse Retriever** | BM25 (via `rank_bm25`) |
+| **LLM** | [Groq](https://groq.com/) (e.g., `openai/gpt-oss-20b` or `llama3-70b-8192`) |
 | **Embeddings** | `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` |
-| **Vector Database** | [ChromaDB](https://www.trychroma.com/) |
-| **Keyword Search** | BM25 (`rank_bm25` / `langchain_community.retrievers`) |
-| **LLM Inference** | [Groq](https://groq.com/) API |
-| **Audio Playback** | `pygame` |
+| **Tunneling** | [ngrok](https://ngrok.com/) (free tier) |
+| **Language** | Python 3.9+ |
 
 ---
 
-## 📦 Prerequisites
+## 🏗️ Architecture & Flow
 
-Before getting started, make sure you have the following installed:
+```mermaid
+graph TD
+    A[📞 Incoming Call] -->|Twilio Webhook| B[FastAPI /voice]
+    B --> C[Gather & Play Greeting]
+    C --> D[User Speaks]
+    D -->|Twilio STT| E[/process_speech]
+    E --> F[RAG Pipeline]
+    F --> G[Groq LLM]
+    G --> H[Answer Text]
+    H --> I[edge‑tts → MP3]
+    I --> J[Play MP3 back to caller]
+    J --> K[Prompt for next question]
+    K --> D
+🚀 Getting Started
+Prerequisites
+Python 3.9+
 
-1. **Python 3.10+**
-2. **Groq API Key**: An active API key from Groq to run LLM inference.
-3. **FFmpeg**: Required for audio processing.
-   * *Windows:* Install via `winget install FFmpeg` or download from the official site and add it to your system `PATH`.
+A Twilio account with a phone number (trial works).
 
----
+A Groq API key.
 
-## ⚙️ Installation & Setup
+ngrok (free account) for exposing your local server.
 
-### 1. Clone the Repository
-
-```bash
-git clone https://github.com/nischalgirii/ai-system.git
-cd ai-system
-```
-
-### 2. Set Up Virtual Environment
-
-Using uv:
-```bash
-uv venv
-.\.venv\Scripts\Activate.ps1
-```
-
-Or using standard Python venv (PowerShell):
-```bash
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-```
-
-### 3. Install Dependencies
-
-Using uv:
-```bash
-uv pip install -r requirements.txt
-```
-
-Or using pip:
-```bash
+1. Clone & Install Dependencies
+bash
+git clone https://github.com/NischalGirii/voice-to-voice
+cd voice-to-voice
 pip install -r requirements.txt
-```
+requirements.txt (example):
 
-### 4. Configure Environment Variables
-Create a `.env` file in the root directory and add your Groq API Key:
-```
+text
+fastapi
+uvicorn[standard]
+twilio
+edge-tts
+groq
+langchain-huggingface
+langchain-chroma
+rank-bm25
+python-dotenv
+2. Set Up Environment Variables
+Create a .env file in the project root:
+
+ini
 GROQ_API_KEY=your_groq_api_key_here
-```
+3. Prepare Your Knowledge Base
+Place your documents (text files) in a directory, then run the indexing script to create:
 
----
+data/chroma_db/ – Chroma vector store.
 
-### 📁 Directory Structure
-```
-ai-system/
-├── app.py                 # Main Streamlit web application & UI/TTS handling
-├── ingest.py              # Text chunking, embedding, and hybrid index builder
+data/bm25_retriever.pkl – BM25 index.
+
+4. Run the FastAPI Server
+bash
+python main.py
+The server will start at http://localhost:8000.
+
+5. Expose with ngrok
+In a separate terminal:
+
+bash
+ngrok http 8000
+Copy the HTTPS forwarding URL (e.g., https://xxxx.ngrok-free.dev).
+
+6. Configure Twilio
+In your Twilio Console, go to Phone Numbers → Active Numbers → click your number.
+
+Under Voice & Fax, set:
+
+A call comes in → Webhook → URL: https://your-ngrok-url.ngrok-free.dev/voice → HTTP Method: POST.
+
+Save.
+
+Trial account note: If you cannot access the number configuration page, use the "Test a Call" tool in the Twilio Console – enter your ngrok URL + /voice and click Start call.
+
+📞 How to Use
+Dial your Twilio phone number.
+
+After the greeting, ask your question in Nepali (e.g., "अर्जुन शर्मा को हुन्?").
+
+Wait for the assistant to answer in natural Nepali.
+
+Continue with follow‑up questions (e.g., "उनको पेशा के हो?").
+
+Say "धन्यवाद" or "बिदा" to end the call.
+
+🧠 RAG Engine Details
+Hybrid Retrieval: Combines vector similarity (ChromaDB) and BM25 lexical matching, fused with Reciprocal Rank Fusion (RRF).
+
+Person Tracking: Remembers the current person mentioned to handle pronouns.
+
+Context Building: Limits context to 10k characters and 6 chunks to keep responses concise.
+
+LLM Prompting: Uses a system prompt that instructs the model to answer succinctly in Nepali, based solely on the retrieved context.
+
+⚙️ Configuration
+Key settings in rag_engine.py:
+
+Variable	Description	Default
+GROQ_MODEL	Groq model to use	openai/gpt-oss-20b
+VECTOR_K	Number of vector results	6
+BM25_K	Number of BM25 results	6
+FINAL_CONTEXT_CHUNKS	Chunks fed to LLM	6
+MAX_CONTEXT_CHARS	Max context length	10000
+MAX_COMPLETION_TOKENS	Max tokens for answer	512
+🛡️ Error Handling & Fallbacks
+If Groq is unavailable → returns "माफ गर्नुहोस्, अहिले सूचना सेवा उपलब्ध छैन।"
+
+If no relevant documents → "माफ गर्नुहोस्, यस विषयमा उपलब्ध जानकारी छैन।"
+
+If TTS fails → falls back to Twilio's <Say> (robotic but functional).
+
+If a user says goodbye → hangs up gracefully.
+
+🧪 Testing Locally Without a Phone
+You can simulate a request using curl:
+
+bash
+curl -X POST "https://your-ngrok-url.ngrok-free.dev/process_speech" \
+  -d "SpeechResult=अर्जुन शर्मा को हुन्" \
+  -H "Content-Type: application/x-www-form-urlencoded"
+📂 Project Structure
+text
+.
+├── main.py                 # FastAPI application, Twilio endpoints, TTS
 ├── src/
 │   └── rag/
-│       └── rag_engine.py  # Cached Hybrid RAG pipeline & Groq integration
+│       └── rag_engine.py   # RAG pipeline (retrieval, LLM, session memory)
 ├── data/
-│   ├── arjun_bio.txt      # Clean text source for knowledge base
-│   ├── chroma_db/         # Persisted vector database (generated)
-│   └── bm25_retriever.pkl # Persisted keyword index (generated)
-├── requirements.txt       # Project dependencies
-├── .env                   # Environment variables (API Keys)
-└── README.md              # Project documentation
-```
+│   ├── chroma_db/          # Vector store
+│   └── bm25_retriever.pkl  # BM25 index
+├── static/                 # Generated MP3 files (served statically)
+├── .env                    # Environment variables (GROQ_API_KEY)
+└── requirements.txt
+🔧 Troubleshooting
+Issue	Solution
+"Application Error" on call	Check ngrok logs; ensure the ngrok-skip-browser-warning header is added (see middleware in main.py).
+MP3 not playing	Verify the static URL is absolute (https://your-ngrok-url/static/...) and file exists.
+Groq returns 403	Check your API key and network; ensure .env is loaded.
+TTS takes too long	Edge‑tts generates fast (~1‑2s). If slower, ensure stable internet.
+🚧 Future Improvements
+Caching – pre‑generate common answers and greetings.
 
-### How to Run
-1. **Ingest Documents (Build the Knowledge Base)**  
-   Place your clean text source files inside the `data/` folder, then run the ingestion script to build the ChromaDB and BM25 indexes:
-   ```bash
-   python ingest.py
-   ```
+Streaming TTS – reduce latency by streaming audio chunks.
 
-2. **Launch the Web Application**  
-   Start the Streamlit server:
-   ```bash
-   streamlit run app.py
-   ```
+Multi‑language support – add English fallback.
 
-3. Open http://localhost:8501 in your browser.
+Call recording / analytics – log interactions for improvement.
 
-4. Click "☎️ Start Call" to initiate the connection and speak naturally into your microphone when prompted.
-```
+📄 License
+MIT © Nischal Giri
+
+🙏 Acknowledgements
+Twilio for voice and STT.
+
+Groq for fast inference.
+
+edge‑tts for free, high‑quality Nepali TTS.
+
+ngrok for local tunneling.

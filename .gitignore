@@ -15,3 +15,8 @@ models/
 *.pth
 *.onnx
 .env
+test_call.py
+
+*.pkl
+*.mp3
+static/
