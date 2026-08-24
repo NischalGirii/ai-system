@@ -1,3 +1,8 @@
+Here's the complete **README.md** file with your name and repository URL. You can copy the content below and save it as `README.md` in your project root.
+
+---
+
+```markdown
 # 🎙️ Voice‑to‑Voice RAG Assistant (Nepali)
 
 > A production‑ready voice assistant that answers biographical and factual queries in Nepali, using a hybrid RAG pipeline (Vector + BM25) and a Groq LLM, all accessible via phone (Twilio).
@@ -59,24 +64,29 @@ graph TD
     I --> J[Play MP3 back to caller]
     J --> K[Prompt for next question]
     K --> D
-🚀 Getting Started
-Prerequisites
-Python 3.9+
+```
 
-A Twilio account with a phone number (trial works).
+---
 
-A Groq API key.
+## 🚀 Getting Started
 
-ngrok (free account) for exposing your local server.
+### Prerequisites
 
-1. Clone & Install Dependencies
-bash
+- Python 3.9+
+- A [Twilio](https://www.twilio.com/) account with a phone number (trial works).
+- A [Groq](https://console.groq.com/) API key.
+- [ngrok](https://ngrok.com/) (free account) for exposing your local server.
+
+### 1. Clone & Install Dependencies
+
+```bash
 git clone https://github.com/NischalGirii/voice-to-voice
 cd voice-to-voice
 pip install -r requirements.txt
-requirements.txt (example):
+```
 
-text
+**requirements.txt** (example):
+```
 fastapi
 uvicorn[standard]
 twilio
@@ -86,123 +96,185 @@ langchain-huggingface
 langchain-chroma
 rank-bm25
 python-dotenv
-2. Set Up Environment Variables
-Create a .env file in the project root:
+```
 
-ini
+### 2. Set Up Environment Variables
+
+Create a `.env` file in the project root:
+
+```ini
 GROQ_API_KEY=your_groq_api_key_here
-3. Prepare Your Knowledge Base
+```
+
+### 3. Prepare Your Knowledge Base
+
 Place your documents (text files) in a directory, then run the indexing script to create:
 
-data/chroma_db/ – Chroma vector store.
+- `data/chroma_db/` – Chroma vector store.
+- `data/bm25_retriever.pkl` – BM25 index.
 
-data/bm25_retriever.pkl – BM25 index.
+### 4. Run the FastAPI Server
 
-4. Run the FastAPI Server
-bash
+```bash
 python main.py
-The server will start at http://localhost:8000.
+```
 
-5. Expose with ngrok
+The server will start at `http://localhost:8000`.
+
+### 5. Expose with ngrok
+
 In a separate terminal:
 
-bash
+```bash
 ngrok http 8000
-Copy the HTTPS forwarding URL (e.g., https://xxxx.ngrok-free.dev).
+```
 
-6. Configure Twilio
-In your Twilio Console, go to Phone Numbers → Active Numbers → click your number.
+Copy the HTTPS forwarding URL (e.g., `https://xxxx.ngrok-free.dev`).
 
-Under Voice & Fax, set:
+### 6. Configure Twilio
 
-A call comes in → Webhook → URL: https://your-ngrok-url.ngrok-free.dev/voice → HTTP Method: POST.
+- In your Twilio Console, go to **Phone Numbers** → **Active Numbers** → click your number.
+- Under **Voice & Fax**, set:
+  - **A call comes in** → Webhook → URL: `https://your-ngrok-url.ngrok-free.dev/voice` → HTTP Method: `POST`.
+- Save.
 
-Save.
+**Trial account note:** If you cannot access the number configuration page, use the **"Test a Call"** tool in the Twilio Console – enter your ngrok URL + `/voice` and click **Start call**.
 
-Trial account note: If you cannot access the number configuration page, use the "Test a Call" tool in the Twilio Console – enter your ngrok URL + /voice and click Start call.
+---
 
-📞 How to Use
-Dial your Twilio phone number.
+## 📞 How to Use
 
-After the greeting, ask your question in Nepali (e.g., "अर्जुन शर्मा को हुन्?").
+1. Dial your Twilio phone number.
+2. After the greeting, ask your question in Nepali (e.g., *"अर्जुन शर्मा को हुन्?"*).
+3. Wait for the assistant to answer in natural Nepali.
+4. Continue with follow‑up questions (e.g., *"उनको पेशा के हो?"*).
+5. Say *"धन्यवाद"* or *"बिदा"* to end the call.
 
-Wait for the assistant to answer in natural Nepali.
+---
 
-Continue with follow‑up questions (e.g., "उनको पेशा के हो?").
+## 🧠 RAG Engine Details
 
-Say "धन्यवाद" or "बिदा" to end the call.
+- **Hybrid Retrieval:** Combines vector similarity (ChromaDB) and BM25 lexical matching, fused with Reciprocal Rank Fusion (RRF).
+- **Person Tracking:** Remembers the current person mentioned to handle pronouns.
+- **Context Building:** Limits context to 10k characters and 6 chunks to keep responses concise.
+- **LLM Prompting:** Uses a system prompt that instructs the model to answer succinctly in Nepali, based solely on the retrieved context.
 
-🧠 RAG Engine Details
-Hybrid Retrieval: Combines vector similarity (ChromaDB) and BM25 lexical matching, fused with Reciprocal Rank Fusion (RRF).
+---
 
-Person Tracking: Remembers the current person mentioned to handle pronouns.
+## ⚙️ Configuration
 
-Context Building: Limits context to 10k characters and 6 chunks to keep responses concise.
+Key settings in `rag_engine.py`:
 
-LLM Prompting: Uses a system prompt that instructs the model to answer succinctly in Nepali, based solely on the retrieved context.
+| Variable | Description | Default |
+| :--- | :--- | :--- |
+| `GROQ_MODEL` | Groq model to use | `openai/gpt-oss-20b` |
+| `VECTOR_K` | Number of vector results | 6 |
+| `BM25_K` | Number of BM25 results | 6 |
+| `FINAL_CONTEXT_CHUNKS` | Chunks fed to LLM | 6 |
+| `MAX_CONTEXT_CHARS` | Max context length | 10000 |
+| `MAX_COMPLETION_TOKENS` | Max tokens for answer | 512 |
 
-⚙️ Configuration
-Key settings in rag_engine.py:
+---
 
-Variable	Description	Default
-GROQ_MODEL	Groq model to use	openai/gpt-oss-20b
-VECTOR_K	Number of vector results	6
-BM25_K	Number of BM25 results	6
-FINAL_CONTEXT_CHUNKS	Chunks fed to LLM	6
-MAX_CONTEXT_CHARS	Max context length	10000
-MAX_COMPLETION_TOKENS	Max tokens for answer	512
-🛡️ Error Handling & Fallbacks
-If Groq is unavailable → returns "माफ गर्नुहोस्, अहिले सूचना सेवा उपलब्ध छैन।"
+## 🛡️ Error Handling & Fallbacks
 
-If no relevant documents → "माफ गर्नुहोस्, यस विषयमा उपलब्ध जानकारी छैन।"
+- If Groq is unavailable → returns *"माफ गर्नुहोस्, अहिले सूचना सेवा उपलब्ध छैन।"*
+- If no relevant documents → *"माफ गर्नुहोस्, यस विषयमा उपलब्ध जानकारी छैन।"*
+- If TTS fails → falls back to Twilio's `<Say>` (robotic but functional).
+- If a user says goodbye → hangs up gracefully.
 
-If TTS fails → falls back to Twilio's <Say> (robotic but functional).
+---
 
-If a user says goodbye → hangs up gracefully.
+## 🧪 Testing Locally Without a Phone
 
-🧪 Testing Locally Without a Phone
-You can simulate a request using curl:
+You can simulate a request using `curl`:
 
-bash
+```bash
 curl -X POST "https://your-ngrok-url.ngrok-free.dev/process_speech" \
   -d "SpeechResult=अर्जुन शर्मा को हुन्" \
   -H "Content-Type: application/x-www-form-urlencoded"
-📂 Project Structure
-text
-.
-├── main.py                 # FastAPI application, Twilio endpoints, TTS
+```
+
+---
+
+## 📂 Project Structure
+
+```
+
+voice-to-voice/
 ├── src/
-│   └── rag/
-│       └── rag_engine.py   # RAG pipeline (retrieval, LLM, session memory)
-├── data/
-│   ├── chroma_db/          # Vector store
-│   └── bm25_retriever.pkl  # BM25 index
-├── static/                 # Generated MP3 files (served statically)
-├── .env                    # Environment variables (GROQ_API_KEY)
-└── requirements.txt
-🔧 Troubleshooting
-Issue	Solution
-"Application Error" on call	Check ngrok logs; ensure the ngrok-skip-browser-warning header is added (see middleware in main.py).
-MP3 not playing	Verify the static URL is absolute (https://your-ngrok-url/static/...) and file exists.
-Groq returns 403	Check your API key and network; ensure .env is loaded.
-TTS takes too long	Edge‑tts generates fast (~1‑2s). If slower, ensure stable internet.
-🚧 Future Improvements
-Caching – pre‑generate common answers and greetings.
+│   ├── ingestion/                      # Data preprocessing (run once)
+│   │   ├── embedder.py                 # Creates embeddings for ChromaDB
+│   │   ├── extractor.py                # Loads raw documents (PDF, TXT, etc.)
+│   │   └── ingestion.py                # Main indexing script (run this first)
+│   │
+│   └── rag/                            # RAG inference pipeline
+│       └── rag_engine.py               # Hybrid retrieval + Groq LLM + session memory
+│
+├── data/                               # Persistent knowledge base (auto‑created)
+│   ├── chroma_db/                      # Vector store (ChromaDB)
+│   └── bm25_retriever.pkl              # Sparse BM25 index
+│
+├── static/                             # Temporary MP3 files (served for TTS)
+│   └── *.mp3                           # Generated audio (cleaned periodically)
+│
+├── assets/                             # Images, logos, or static assets
+│
+├── model/                              # (Optional) Cached models or local weights
+│
+├── main.py                             # FastAPI server (Twilio endpoints, edge‑tts)
+├── app.py                              # Legacy/alternative entry point (if used)
+├── test_call.py                        # Twilio outbound call script (example)
+│
+├── .env                                # Environment variables (GROQ_API_KEY, etc.)
+├── .gitignore                          # Ignore .env, static/, data/, __pycache__/
+├── .python-version                     # Python version (e.g., 3.11)
+│
+├── pyproject.toml                      # Project metadata & build config
+├── uv.lock                             # Dependency lock (if using uv)
+├── requirements.txt                    # Python dependencies (pip)
+│
+└── README.md                           # Project documentation (you are here)
 
-Streaming TTS – reduce latency by streaming audio chunks.
+---
 
-Multi‑language support – add English fallback.
+## 🔧 Troubleshooting
 
-Call recording / analytics – log interactions for improvement.
+| Issue | Solution |
+| :--- | :--- |
+| **"Application Error" on call** | Check ngrok logs; ensure the `ngrok-skip-browser-warning` header is added (see middleware in `main.py`). |
+| **MP3 not playing** | Verify the static URL is absolute (`https://your-ngrok-url/static/...`) and file exists. |
+| **Groq returns 403** | Check your API key and network; ensure `.env` is loaded. |
+| **TTS takes too long** | Edge‑tts generates fast (~1‑2s). If slower, ensure stable internet. |
 
-📄 License
-MIT © Nischal Giri
+---
 
-🙏 Acknowledgements
-Twilio for voice and STT.
+## 🚧 Future Improvements
 
-Groq for fast inference.
+- **Caching** – pre‑generate common answers and greetings.
+- **Streaming TTS** – reduce latency by streaming audio chunks.
+- **Multi‑language support** – add English fallback.
+- **Call recording / analytics** – log interactions for improvement.
 
-edge‑tts for free, high‑quality Nepali TTS.
+---
 
-ngrok for local tunneling.
+## 📄 License
+
+MIT © [Nischal Giri](https://github.com/NischalGirii)
+
+---
+
+## 🙏 Acknowledgements
+
+- [Twilio](https://www.twilio.com/) for voice and STT.
+- [Groq](https://groq.com/) for fast inference.
+- [edge‑tts](https://github.com/rany2/edge-tts) for free, high‑quality Nepali TTS.
+- [ngrok](https://ngrok.com/) for local tunneling.
+
+---
+
+**Enjoy your voice‑powered RAG assistant!** 🎉
+```
+
+---
+
