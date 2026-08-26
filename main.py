@@ -12,13 +12,12 @@ from twilio.twiml.voice_response import VoiceResponse, Gather, Redirect
 from twilio.rest import Client as TwilioClient
 from dotenv import load_dotenv
 
-# Load environment variables
 load_dotenv()
 
 from src.rag.rag_engine import answer_user_query, init_pipeline
 
 # ------------------------------------------------------------------
-# Configuration – read from environment
+# Configuration
 # ------------------------------------------------------------------
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
@@ -26,21 +25,17 @@ TWILIO_PHONE_NUMBER = os.getenv("TWILIO_PHONE_NUMBER")
 
 BASE_URL = os.getenv("BASE_URL")
 if not BASE_URL:
-    raise ValueError("BASE_URL environment variable not set.")
+    raise ValueError("BASE_URL not set in .env")
 
 ACTION_URL = f"{BASE_URL}/process_speech"
 VOICE_URL = f"{BASE_URL}/voice"
-LISTEN_URL = f"{BASE_URL}/listen"   # new endpoint
+LISTEN_URL = f"{BASE_URL}/listen"
 
 # Static MP3 URLs
 GREETING_MP3 = f"{BASE_URL}/static/greeting.mp3"
 RETRY_MP3 = f"{BASE_URL}/static/retry.mp3"
-PROMPT_NEXT_MP3 = f"{BASE_URL}/static/prompt_next.mp3"
 GOODBYE_MP3 = f"{BASE_URL}/static/goodbye.mp3"
 
-# ------------------------------------------------------------------
-# App setup
-# ------------------------------------------------------------------
 os.makedirs("static", exist_ok=True)
 app = FastAPI()
 
@@ -53,9 +48,6 @@ class AddNgrokSkipHeaderMiddleware(BaseHTTPMiddleware):
 app.add_middleware(AddNgrokSkipHeaderMiddleware)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-# ------------------------------------------------------------------
-# Startup
-# ------------------------------------------------------------------
 @app.on_event("startup")
 async def startup_event():
     print("🔥 Warming up RAG engine...")
@@ -63,7 +55,7 @@ async def startup_event():
     print("🚀 RAG engine ready!")
 
 # ------------------------------------------------------------------
-# TTS helper
+# TTS helper (edge‑tts)
 # ------------------------------------------------------------------
 async def synthesize_nepali_speech(text: str) -> str:
     print(f"🔊 Synthesizing: {text[:50]}...")
@@ -88,47 +80,44 @@ async def process_nepali_query(user_text: str) -> str:
         return "क्षमा गर्नुहोस्, जानकारी खोज्न समस्या भयो।"
 
 # ------------------------------------------------------------------
-# /voice – plays greeting and redirects to /listen
+# /voice – plays greeting and redirects to /listen?first=1
 # ------------------------------------------------------------------
 @app.api_route("/voice", methods=["GET", "POST"])
 async def handle_incoming_call(request: Request):
     print("📞 /voice called")
     response = VoiceResponse()
     
-    # Play greeting (using MP3 if available, else Say)
     try:
         response.play(GREETING_MP3)
     except:
         response.say("नमस्ते! स्वचालित सूचना सेवामा स्वागत छ। तपाईं के जानकारी चाहनुहुन्छ?")
     
-    # Redirect to the /listen endpoint which will handle the gather
-    response.redirect(LISTEN_URL, method="POST")
+    # Redirect to /listen with first=1 (we'll ignore this flag now, but it's harmless)
+    response.redirect(f"{LISTEN_URL}?first=1", method="POST")
     
     twiml = str(response)
     print(f"[VOICE TWIML] {twiml}")
     return Response(content=twiml, media_type="application/xml")
 
 # ------------------------------------------------------------------
-# /listen – contains the <Gather> to capture speech
+# /listen – silent <Gather> (no prompt)
 # ------------------------------------------------------------------
 @app.api_route("/listen", methods=["GET", "POST"])
 async def listen_for_speech(request: Request):
     print("🎙️ /listen called")
     response = VoiceResponse()
     
+    # No Say – just listen silently
     gather = Gather(
         input="speech",
         action=ACTION_URL,
         language="ne-NP",
-        timeout=10,                # longer timeout
+        timeout=10,
         speechTimeout="auto",
     )
-    # Optional: add a prompt inside the gather (will be played before listening)
-    gather.say("कृपया आफ्नो प्रश्न भन्नुहोस्।")
     response.append(gather)
     
-    # If the gather ends without speech, we redirect back to /listen
-    # This keeps the call alive in a loop.
+    # If no speech, redirect back to /listen (silent loop)
     response.redirect(LISTEN_URL, method="POST")
     
     twiml = str(response)
@@ -136,7 +125,7 @@ async def listen_for_speech(request: Request):
     return Response(content=twiml, media_type="application/xml")
 
 # ------------------------------------------------------------------
-# /process_speech – handles the user's spoken input
+# /process_speech – uses edge‑tts for answer, then redirects silently
 # ------------------------------------------------------------------
 @app.api_route("/process_speech", methods=["GET", "POST"])
 async def process_speech(request: Request, SpeechResult: str = Form(None), Digits: str = Form(None)):
@@ -157,7 +146,7 @@ async def process_speech(request: Request, SpeechResult: str = Form(None), Digit
                 print(f"[TWIML RESPONSE] {twiml}")
                 return Response(content=twiml, media_type="application/xml")
 
-            # Try to play dynamic MP3, fallback to Say
+            # Generate MP3 via edge‑tts and play it
             try:
                 filename = await synthesize_nepali_speech(answer_text)
                 mp3_url = f"{BASE_URL}/static/{filename}"
@@ -167,14 +156,14 @@ async def process_speech(request: Request, SpeechResult: str = Form(None), Digit
                 print("⚠️ TTS failed, using <Say>")
                 response.say(answer_text)
         else:
-            # No speech detected – play retry and redirect back to listen
+            # No speech – play retry and redirect to /listen
             response.play(RETRY_MP3)
             response.redirect(LISTEN_URL, method="POST")
             twiml = str(response)
             print(f"[TWIML RESPONSE] {twiml}")
             return Response(content=twiml, media_type="application/xml")
 
-        # After playing the answer, redirect to /listen for the next question
+        # After answer, redirect to /listen silently (no prompt)
         response.redirect(LISTEN_URL, method="POST")
         twiml = str(response)
         print(f"[TWIML RESPONSE] {twiml}")
