@@ -1,18 +1,58 @@
+import requests
+import time
+import pygame
 import os
-from twilio.rest import Client
+import re
+from urllib.parse import urlparse
 
-# Option A: Replace these strings directly with your actual credentials from the Twilio Console
-# Option B: Set them via PowerShell ($env:TWILIO_ACCOUNT_SID="...")
-account_sid = os.environ.get("TWILIO_ACCOUNT_SID", "YOUR_CREDENTIALS")
-auth_token = os.environ.get("TWILIO_AUTH_TOKEN", "YOUR_CREDENTIALS")
+# Your Cloudflare URL
+BASE_URL = "https://apartment-money-encourages-soa.trycloudflare.com"
 
-client = Client(account_sid, auth_token)
+def play_mp3(url):
+    """Download and play an MP3 from a URL using pygame."""
+    response = requests.get(url, stream=True)
+    if response.status_code != 200:
+        print("Failed to fetch MP3")
+        return
+    # Save to a temp file
+    filename = "temp_answer.mp3"
+    with open(filename, "wb") as f:
+        for chunk in response.iter_content(chunk_size=1024):
+            if chunk:
+                f.write(chunk)
+    # Play
+    pygame.mixer.init()
+    pygame.mixer.music.load(filename)
+    pygame.mixer.music.play()
+    while pygame.mixer.music.get_busy():
+        time.sleep(0.1)
+    pygame.mixer.quit()
+    os.remove(filename)
 
-call = client.calls.create(
-    # Point this directly to your live ngrok FastAPI endpoint!
-    url="YOUR_URL",
-    to="YOUR_PHONE_NUMBER",  # Ensure this number is verified in your Twilio console
-    from_="TRAIL_NUMBER",  # Your Twilio trial phone number
-)
+def ask_question(question):
+    """Send a question to /process_speech and return the MP3 URL from TwiML."""
+    payload = {"SpeechResult": question, "Digits": ""}
+    resp = requests.post(f"{BASE_URL}/process_speech", data=payload)
+    if resp.status_code != 200:
+        print("Error:", resp.text)
+        return None
+    # Extract the Play URL from the XML
+    match = re.search(r'<Play>(.*?)</Play>', resp.text)
+    if match:
+        return match.group(1)
+    else:
+        print("No Play URL found. Response:", resp.text)
+        return None
 
-print(f"Call initiated successfully! SID: {call.sid}")
+if __name__ == "__main__":
+    print("Simulated call to Nepali Information Service. Type 'exit' to quit.")
+    while True:
+        q = input("\nYour question (in Nepali): ").strip()
+        if q.lower() in ("exit", "quit", "bye"):
+            break
+        if not q:
+            continue
+        mp3_url = ask_question(q)
+        if mp3_url:
+            print(f"Playing answer from: {mp3_url}")
+            play_mp3(mp3_url)

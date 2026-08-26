@@ -12,8 +12,8 @@ load_dotenv()
 
 os.environ.update({
     "TRANSFORMERS_VERBOSITY": "error",
-    "HF_HUB_OFFLINE": "1",
-    "TRANSFORMERS_OFFLINE": "1",
+    "HF_HUB_OFFLINE": "0",
+    "TRANSFORMERS_OFFLINE": "0",
 })
 
 warnings.filterwarnings("ignore")
@@ -35,14 +35,14 @@ PERSIST_DIR = "data/chroma_db"
 BM25_PKL_PATH = "data/bm25_retriever.pkl"
 EMBEDDING_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 
-GROQ_MODEL = "openai/gpt-oss-20b"           # Your chosen model
+GROQ_MODEL = "openai/gpt-oss-20b"
 GROQ_REASONING_EFFORT = "low"
 
-VECTOR_K = 6
-BM25_K = 6
+VECTOR_K = 15           # increased for better recall
+BM25_K = 15
 FINAL_CONTEXT_CHUNKS = 6
 MAX_CONTEXT_CHARS = 10000
-MAX_COMPLETION_TOKENS = 512
+MAX_COMPLETION_TOKENS = 256
 
 NO_INFO = "माफ गर्नुहोस्, यस विषयमा उपलब्ध जानकारी छैन।"
 DATABASE_ERROR = "माफ गर्नुहोस्, अहिले जानकारी प्रणालीमा समस्या देखिएको छ।"
@@ -51,23 +51,13 @@ SERVER_ERROR = "माफ गर्नुहोस्, अहिले सर्
 GOODBYE_RESPONSE = "धन्यवाद। फेरि भेटौँला।"
 
 EXIT_PHRASES = {"bye", "bye bye", "goodbye", "good bye", "बिदा", "बाइ", "बाइ बाइ", "धन्यवाद", "फेरि भेटौँला"}
-DISCOVERY_PHRASES = {"whose information", "कसको जानकारी", "को को हुनुहुन्छ"}
-SERVICE_PERSPECTIVE_TERMS = {"तपाईंलाई", "तपाईलाई", "तपाईँलाई"}
-TECHNICAL_TERMS = {"technical", "engineer", "सफ्टवेयर", "इन्जिनियर"}
-PERSON_PRONOUNS = {"उनी", "उहाँ", "उनको", "उहाँको", "he", "she"}
 QUESTION_WORDS = {"who", "is", "are", "को", "के", "कहाँ", "कहिले"}
-PERSON_ALIASES = {"arjun sharma": "अर्जुन शर्मा", "arjun": "अर्जुन शर्मा", "अर्जुन शर्मा": "अर्जुन शर्मा", "अर्जुन": "अर्जुन शर्मा"}
 
-# =========================================================
-# SESSION MEMORY (per call)
-# =========================================================
-call_state = {"current_person": None}
-
-def get_current_person():
-    return call_state.get("current_person", None)
-
-def set_current_person(name):
-    call_state["current_person"] = name if name else None
+# ---- Hardcoded definition (for explicit "what is" only) ----
+DEFINITION_VIPAD = (
+    "विपद् व्यवस्थापन भनेको प्राकृतिक वा मानव निर्मित प्रकोपहरूसँग जुध्न र त्यसबाट हुने क्षतिलाई कम गर्न गरिने सम्पूर्ण कार्यहरूको संयोजन हो। "
+    "यसले विपद् आउनुअघिको तयारीदेखि लिएर विपद् पछिको पुनर्निर्माणसम्मका सबै प्रक्रियाहरूलाई समेट्छ। प्रभावकारी विपद् व्यवस्थापनले समाजलाई सुरक्षित राख्न र संकटको समयमा छिटो तङ्ग्रिन मद्दत गर्छ।"
+)
 
 # =========================================================
 # TEXT PROCESSING
@@ -79,49 +69,13 @@ def is_exit_intent(query: str) -> bool:
     q = normalize_text(query).lower()
     return bool(q) and any(phrase in q for phrase in EXIT_PHRASES)
 
-def detect_person(query: str):
-    q = normalize_text(query).lower()
-    for alias, canonical in PERSON_ALIASES.items():
-        if alias in q:
-            return canonical
-    return None
-
-def analyze_intent(query: str) -> dict:
-    q = normalize_text(query).lower()
-    has_perspective = any(term in q for term in SERVICE_PERSPECTIVE_TERMS)
-    service_quest = has_perspective and any(t in q for t in {"जानकारी", "कसको", "who", "know"})
-    is_discovery = any(p in q for p in DISCOVERY_PHRASES) or service_quest
-    
-    return {
-        "discovery": is_discovery,
-        "technical": (is_discovery and any(t in q for t in TECHNICAL_TERMS)),
-        "service_perspective": service_quest,
-        "followup": any(w in q for w in PERSON_PRONOUNS),
-        "intro": any(p in q for p in ["who is", "परिचय", "बारेमा बताउनुहोस्"]),
-    }
-
-def resolve_followup_query(query: str) -> str:
-    person = get_current_person()
-    if not person: return query
-    q = normalize_text(query).lower()
-    if any(word in q for word in PERSON_PRONOUNS):
-        return f"{person} {query}"
-    return query
-
-def expand_entity_query(query: str) -> str:
-    orig = normalize_text(query)
-    additions = [canonical for alias, canonical in PERSON_ALIASES.items() if alias in orig.lower()]
-    if additions:
-        return f"{orig} {' '.join(dict.fromkeys(additions))}".strip()
-    return orig
-
 def clean_bm25_query(query: str) -> str:
     q = normalize_text(query)
     cleaned_tokens = [t.lower().strip(".,!?;:'\"()[]{}") for t in q.split() if t and t not in QUESTION_WORDS]
     return " ".join(cleaned_tokens) or q
 
 # =========================================================
-# PIPELINE CACHING (global)
+# PIPELINE CACHING
 # =========================================================
 _embeddings = None
 _vector_store = None
@@ -153,16 +107,10 @@ def init_pipeline():
             _bm25 = pickle.load(f)
             _bm25.k = BM25_K
 
-    # ---- Load Groq API key from environment ----
     api_key = os.getenv("GROQ_API_KEY")
     if api_key:
         try:
-            client = Groq(api_key=api_key)
-            # Set the client even if the model check fails; we'll let the API call fail later.
-            _groq = client
-            # Optionally verify model availability:
-            # if GROQ_MODEL in {m.id for m in client.models.list().data}:
-            #     _groq = client
+            _groq = Groq(api_key=api_key)
         except Exception as exc:
             print(f"[GROQ INIT ERROR] {exc}")
     else:
@@ -184,13 +132,11 @@ def retrieve_documents(query: str):
     vector_store, bm25, _ = load_rag_pipeline()
     if not vector_store or not bm25: return []
 
-    resolved = resolve_followup_query(query)
-    expanded = expand_entity_query(resolved)
-    lexical = clean_bm25_query(expanded)
+    lexical = clean_bm25_query(query)
 
     try:
         with ThreadPoolExecutor(max_workers=2) as executor:
-            v_fut = executor.submit(vector_store.similarity_search, expanded, VECTOR_K)
+            v_fut = executor.submit(vector_store.similarity_search, query, VECTOR_K)
             b_fut = executor.submit(bm25.invoke, lexical)
             vector_docs = v_fut.result()
             bm25_docs = b_fut.result()
@@ -219,11 +165,34 @@ def retrieve_documents(query: str):
         b_score = 1.0 / (RRF_K + item["bm25_rank"]) if item["bm25_rank"] else 0.0
         fused.append({"score": v_score + b_score, "text": txt})
 
+    # ---- Enhanced keyword boosting for disaster types ----
+    # Boost chunks containing specific disaster type words that appear in the query.
+    disaster_keywords = ["भूकम्प", "बाढी", "पहिरो", "आगलागी", "हिमपहिरो", "चट्याङ"]
+    for item in fused:
+        # For each keyword present in query, boost chunk if it contains that keyword
+        for kw in disaster_keywords:
+            if kw in query and kw in item["text"]:
+                item["score"] *= 1.3  # 30% boost
+
+    # Also boost for definitional queries (as before)
+    if "के हो" in query:
+        for item in fused:
+            if "परिचय" in item["text"] or "आधारभूत" in item["text"]:
+                item["score"] *= 1.5
+
+    # Re-sort after boosting
     fused.sort(key=lambda x: x["score"], reverse=True)
+
+    # Debug: print top 3 chunks
+    print(f"[RETRIEVED CHUNKS] Top 3 scores:")
+    for i, item in enumerate(fused[:3]):
+        print(f"  {i+1}. Score {item['score']:.4f}: {item['text'][:100]}...")
+
     return fused
 
-def build_context(documents):
-    if not documents: return ""
+def build_context(documents, query=""):
+    if not documents:
+        return ""
     chunks = []
     total_chars = 0
     for item in documents[:FINAL_CONTEXT_CHUNKS]:
@@ -235,15 +204,6 @@ def build_context(documents):
         chunks.append(piece)
         total_chars += len(piece)
     return "\n\n---\n\n".join(chunks)
-
-def correct_service_perspective(answer: str, query: str) -> str:
-    if not answer or not analyze_intent(query)["discovery"]:
-        return answer.strip() if answer else ""
-    corrected = answer.strip()
-    for old in SERVICE_PERSPECTIVE_TERMS:
-        corrected = corrected.replace(old, "मलाई")
-    corrected = re.sub(r"^\s*(तपाईंलाई|तपाईलाई|तपाईँलाई)\s+", "मलाई ", corrected)
-    return corrected.strip()
 
 def cleanup_answer(answer: str) -> str:
     if not answer: return ""
@@ -258,18 +218,32 @@ def cleanup_answer(answer: str) -> str:
 # MAIN ANSWER FUNCTION
 # =========================================================
 def answer_user_query(query: str) -> str:
+    # ---- FIX ENCODING ----
+    try:
+        if 'à¤µ' in query or 'à¤¿' in query:
+            fixed = query.encode('latin-1').decode('utf-8')
+            print(f"[ENCODING FIX] Original: {query!r} -> Fixed: {fixed!r}")
+            query = fixed
+    except Exception:
+        pass
+
     query = normalize_text(query)
+    print(f"[DEBUG] Normalized query: {query!r}")
+
     if len(query) < 2:
         return ""
 
     if is_exit_intent(query):
-        set_current_person(None)
         return GOODBYE_RESPONSE
 
-    detected_person = detect_person(query)
-    if detected_person:
-        set_current_person(detected_person)
+    # ---- DIRECT ANSWER: only for explicit "what is" definitions ----
+    definition_keywords = ["के हो", "भनेको", "परिभाषा", "अर्थ", "मतलब"]
+    if "विपद्" in query and any(kw in query for kw in definition_keywords):
+        print("[DIRECT] Returning definition for definitional query.")
+        return DEFINITION_VIPAD
 
+    # ---- RAG pipeline ----
+    print("[RAG] Proceeding with retrieval and LLM.")
     vector_store, bm25, groq = load_rag_pipeline()
     if not vector_store or not bm25:
         return DATABASE_ERROR
@@ -278,21 +252,27 @@ def answer_user_query(query: str) -> str:
 
     documents = retrieve_documents(query)
     if not documents:
+        # If no documents retrieved, try to give a generic answer based on known patterns
+        # For earthquake and flood, we can provide a fallback from our own knowledge (not from doc)
+        # but we prefer to say "not found".
         return NO_INFO
 
-    context = build_context(documents)
+    context = build_context(documents, query=query)
     if not context:
         return NO_INFO
 
-    task = "प्रयोगकर्ताको प्रश्नको सिधा, छोटो र conversational नेपाली उत्तर दिनुहोस्।"
-    current_person = get_current_person() or "कुनै निश्चित व्यक्ति छैन"
+    print(f"[CONTEXT PREVIEW] {context[:500]}...")
 
     system_prompt = f"""
-    तपाईं "अर्जुन शर्मा व्यक्तिगत सूचना सेवा" का नेपाली voice assistant हुनुहुन्छ। छोटो उत्तर दिनुहोस्।
-    हाल सम्झिएको व्यक्ति: {current_person}
-    कार्य: {task}
-    सन्दर्भ: {context}
-    """
+तपाईं "विपद् व्यवस्थापन सूचना सेवा" का नेपाली voice assistant हुनुहुन्छ।
+तपाईंको काम: प्रयोगकर्ताको प्रश्नको छोटो, स्पष्ट र सटीक उत्तर दिनुहोस्।
+उत्तर दिनको लागि **केवल** दिइएको सन्दर्भ प्रयोग गर्नुहोस्।
+यदि सन्दर्भमा उत्तर छैन भने, "माफ गर्नुहोस्, यस विषयमा जानकारी छैन" भन्नुहोस्।
+प्रयोगकर्तालाई "तपाईं" भनेर सम्बोधन गर्नुहोस् र "म", "मलाई" जस्ता शब्दहरू प्रयोग नगर्नुहोस्।
+
+सन्दर्भ:
+{context}
+"""
 
     try:
         res = groq.chat.completions.create(
@@ -320,7 +300,6 @@ def answer_user_query(query: str) -> str:
             ans = str(raw.get("content") or raw.get("text") or "").strip()
 
         ans = cleanup_answer(ans)
-        ans = correct_service_perspective(ans, query)
 
         if ans and len(ans) > 25 and ans[-1] not in ("।", "?", "!", ".", "…"):
             ans += "।"

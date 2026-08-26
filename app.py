@@ -32,7 +32,11 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-TTS_VOICE, TTS_RATE, TTS_VOLUME, TTS_PITCH = "ne-NP-SagarNeural", "+0%", "+0%", "+0Hz"
+# ----- TTS VOICE (FEMALE NEPALI) -----
+# Changed from male "ne-NP-SagarNeural" to female "ne-NP-HemkalaNeural"
+TTS_VOICE = "ne-NP-HemkalaNeural"
+TTS_RATE, TTS_VOLUME, TTS_PITCH = "+0%", "+0%", "+0Hz"
+
 IGNORED_UTTERANCES = {"uh", "um", "hmm", "hm", "mm", "mmm", "हम्म", "ह्म्म", "अँ", "ए", "ओ", "आ", "उम्", "हूँ", "हुम्"}
 
 # Initialize Session State

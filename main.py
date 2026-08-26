@@ -5,22 +5,45 @@ import uvicorn
 import edge_tts
 import traceback
 from fastapi import FastAPI, Form, Request
-from fastapi.responses import Response
+from fastapi.responses import Response, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
-from twilio.twiml.voice_response import VoiceResponse, Gather
+from twilio.twiml.voice_response import VoiceResponse, Gather, Redirect
+from twilio.rest import Client as TwilioClient
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 from src.rag.rag_engine import answer_user_query, init_pipeline
 
 # ------------------------------------------------------------------
-# Create static directory and mount it
+# Configuration – read from environment
+# ------------------------------------------------------------------
+TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
+TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
+TWILIO_PHONE_NUMBER = os.getenv("TWILIO_PHONE_NUMBER")
+
+BASE_URL = os.getenv("BASE_URL")
+if not BASE_URL:
+    raise ValueError("BASE_URL environment variable not set.")
+
+ACTION_URL = f"{BASE_URL}/process_speech"
+VOICE_URL = f"{BASE_URL}/voice"
+LISTEN_URL = f"{BASE_URL}/listen"   # new endpoint
+
+# Static MP3 URLs
+GREETING_MP3 = f"{BASE_URL}/static/greeting.mp3"
+RETRY_MP3 = f"{BASE_URL}/static/retry.mp3"
+PROMPT_NEXT_MP3 = f"{BASE_URL}/static/prompt_next.mp3"
+GOODBYE_MP3 = f"{BASE_URL}/static/goodbye.mp3"
+
+# ------------------------------------------------------------------
+# App setup
 # ------------------------------------------------------------------
 os.makedirs("static", exist_ok=True)
 app = FastAPI()
 
-# ------------------------------------------------------------------
-# Middleware to skip ngrok browser warning (free tier)
-# ------------------------------------------------------------------
 class AddNgrokSkipHeaderMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
         response = await call_next(request)
@@ -31,13 +54,7 @@ app.add_middleware(AddNgrokSkipHeaderMiddleware)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # ------------------------------------------------------------------
-# Configuration – update BASE_URL if your ngrok URL changes
-# ------------------------------------------------------------------
-BASE_URL = "https://mocha-slip-pretense.ngrok-free.dev"   # <-- CHANGE THIS
-ACTION_URL = f"{BASE_URL}/process_speech"
-
-# ------------------------------------------------------------------
-# Startup: initialise RAG pipeline
+# Startup
 # ------------------------------------------------------------------
 @app.on_event("startup")
 async def startup_event():
@@ -46,7 +63,7 @@ async def startup_event():
     print("🚀 RAG engine ready!")
 
 # ------------------------------------------------------------------
-# TTS helper (edge‑tts)
+# TTS helper
 # ------------------------------------------------------------------
 async def synthesize_nepali_speech(text: str) -> str:
     print(f"🔊 Synthesizing: {text[:50]}...")
@@ -62,9 +79,6 @@ async def synthesize_nepali_speech(text: str) -> str:
         traceback.print_exc()
         raise
 
-# ------------------------------------------------------------------
-# RAG query helper (async wrapper)
-# ------------------------------------------------------------------
 async def process_nepali_query(user_text: str) -> str:
     try:
         return await asyncio.to_thread(answer_user_query, user_text)
@@ -74,42 +88,55 @@ async def process_nepali_query(user_text: str) -> str:
         return "क्षमा गर्नुहोस्, जानकारी खोज्न समस्या भयो।"
 
 # ------------------------------------------------------------------
-# Endpoint: /voice – initial greeting and gather
+# /voice – plays greeting and redirects to /listen
 # ------------------------------------------------------------------
 @app.api_route("/voice", methods=["GET", "POST"])
 async def handle_incoming_call(request: Request):
     print("📞 /voice called")
     response = VoiceResponse()
-
-    # Use edge‑tts for greeting
+    
+    # Play greeting (using MP3 if available, else Say)
     try:
-        filename = await synthesize_nepali_speech("नमस्ते! सोध्नुहोस्, म कसरी मद्दत गर्न सक्छु?")
-        gather = Gather(
-            input="speech dtmf",
-            action=ACTION_URL,
-            language="ne-NP",
-            timeout=5,
-            speechTimeout="auto",
-            numDigits=1,
-        )
-        gather.play(f"{BASE_URL}/static/{filename}")
-    except Exception:
-        # Fallback to <Say> if TTS fails
-        gather = Gather(
-            input="speech dtmf",
-            action=ACTION_URL,
-            language="ne-NP",
-            timeout=5,
-            speechTimeout="auto",
-            numDigits=1,
-        )
-        gather.say("नमस्ते! कृपया प्रश्न सोध्नुहोस्।")
-
-    response.append(gather)
-    return Response(content=str(response), media_type="application/xml")
+        response.play(GREETING_MP3)
+    except:
+        response.say("नमस्ते! स्वचालित सूचना सेवामा स्वागत छ। तपाईं के जानकारी चाहनुहुन्छ?")
+    
+    # Redirect to the /listen endpoint which will handle the gather
+    response.redirect(LISTEN_URL, method="POST")
+    
+    twiml = str(response)
+    print(f"[VOICE TWIML] {twiml}")
+    return Response(content=twiml, media_type="application/xml")
 
 # ------------------------------------------------------------------
-# Endpoint: /process_speech – process user input and reply
+# /listen – contains the <Gather> to capture speech
+# ------------------------------------------------------------------
+@app.api_route("/listen", methods=["GET", "POST"])
+async def listen_for_speech(request: Request):
+    print("🎙️ /listen called")
+    response = VoiceResponse()
+    
+    gather = Gather(
+        input="speech",
+        action=ACTION_URL,
+        language="ne-NP",
+        timeout=10,                # longer timeout
+        speechTimeout="auto",
+    )
+    # Optional: add a prompt inside the gather (will be played before listening)
+    gather.say("कृपया आफ्नो प्रश्न भन्नुहोस्।")
+    response.append(gather)
+    
+    # If the gather ends without speech, we redirect back to /listen
+    # This keeps the call alive in a loop.
+    response.redirect(LISTEN_URL, method="POST")
+    
+    twiml = str(response)
+    print(f"[LISTEN TWIML] {twiml}")
+    return Response(content=twiml, media_type="application/xml")
+
+# ------------------------------------------------------------------
+# /process_speech – handles the user's spoken input
 # ------------------------------------------------------------------
 @app.api_route("/process_speech", methods=["GET", "POST"])
 async def process_speech(request: Request, SpeechResult: str = Form(None), Digits: str = Form(None)):
@@ -120,53 +147,38 @@ async def process_speech(request: Request, SpeechResult: str = Form(None), Digit
     response = VoiceResponse()
     try:
         if user_input:
-            # 1. Get answer from RAG
             answer_text = await process_nepali_query(user_input)
             print(f"RAG answer: {answer_text}")
 
-            # 2. Play answer via TTS (or fallback to <Say>)
+            if answer_text.strip() == "धन्यवाद। फेरि भेटौँला।":
+                response.play(GOODBYE_MP3)
+                response.hangup()
+                twiml = str(response)
+                print(f"[TWIML RESPONSE] {twiml}")
+                return Response(content=twiml, media_type="application/xml")
+
+            # Try to play dynamic MP3, fallback to Say
             try:
                 filename = await synthesize_nepali_speech(answer_text)
-                response.play(f"{BASE_URL}/static/{filename}")
+                mp3_url = f"{BASE_URL}/static/{filename}"
+                response.play(mp3_url)
+                print(f"[PLAY] {mp3_url}")
             except Exception:
                 print("⚠️ TTS failed, using <Say>")
                 response.say(answer_text)
-
-            # 3. If goodbye, hang up
-            if answer_text.strip() == "धन्यवाद। फेरि भेटौँला।":
-                response.hangup()
-                return Response(content=str(response), media_type="application/xml")
         else:
-            # No input – fallback
-            try:
-                filename = await synthesize_nepali_speech("मैले तपाईंको कुरा बुझिन। कृपया पुनः भन्नुहोस्।")
-                response.play(f"{BASE_URL}/static/{filename}")
-            except Exception:
-                response.say("मैले तपाईंको कुरा बुझिन। कृपया पुनः भन्नुहोस्।")
+            # No speech detected – play retry and redirect back to listen
+            response.play(RETRY_MP3)
+            response.redirect(LISTEN_URL, method="POST")
+            twiml = str(response)
+            print(f"[TWIML RESPONSE] {twiml}")
+            return Response(content=twiml, media_type="application/xml")
 
-        # 4. Continue conversation – prompt for next question
-        try:
-            prompt_filename = await synthesize_nepali_speech("अर्को प्रश्न सोध्नुहोस्।")
-            next_gather = Gather(
-                input="speech dtmf",
-                action=ACTION_URL,
-                language="ne-NP",
-                timeout=5,
-                speechTimeout="auto",
-                numDigits=1,
-            )
-            next_gather.play(f"{BASE_URL}/static/{prompt_filename}")
-        except Exception:
-            next_gather = Gather(
-                input="speech dtmf",
-                action=ACTION_URL,
-                language="ne-NP",
-                timeout=5,
-                speechTimeout="auto",
-                numDigits=1,
-            )
-            next_gather.say("अर्को प्रश्न सोध्नुहोस्।")
-        response.append(next_gather)
+        # After playing the answer, redirect to /listen for the next question
+        response.redirect(LISTEN_URL, method="POST")
+        twiml = str(response)
+        print(f"[TWIML RESPONSE] {twiml}")
+        return Response(content=twiml, media_type="application/xml")
 
     except Exception as e:
         print("❌ Unhandled exception in /process_speech:")
@@ -174,18 +186,45 @@ async def process_speech(request: Request, SpeechResult: str = Form(None), Digit
         response = VoiceResponse()
         response.say("क्षमा गर्नुहोस्, प्रणालीमा समस्या भयो।")
         response.hangup()
-
-    return Response(content=str(response), media_type="application/xml")
+        twiml = str(response)
+        return Response(content=twiml, media_type="application/xml")
 
 # ------------------------------------------------------------------
-# Root endpoint (health check)
+# Outbound endpoint (unchanged)
 # ------------------------------------------------------------------
+@app.post("/outbound")
+async def make_outbound_call(to: str = Form(...), message: str = Form(None)):
+    if not TWILIO_ACCOUNT_SID or not TWILIO_AUTH_TOKEN or not TWILIO_PHONE_NUMBER:
+        return {"error": "Twilio credentials or phone number not configured."}
+    client = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+    try:
+        call = client.calls.create(url=VOICE_URL, to=to, from_=TWILIO_PHONE_NUMBER)
+        return {"status": "success", "call_sid": call.sid, "message": "Call initiated."}
+    except Exception as e:
+        print(f"❌ Outbound call error: {e}")
+        traceback.print_exc()
+        return {"error": str(e)}
+
+@app.get("/outbound", response_class=HTMLResponse)
+async def outbound_form():
+    return """
+    <html>
+        <head><title>Outbound Call Tester</title></head>
+        <body>
+            <h2>Initiate Outbound Call</h2>
+            <form method="post" action="/outbound">
+                <label>Phone Number (e.g. +97798XXXXXXXX):</label>
+                <input type="text" name="to" placeholder="+97798XXXXXXXX" required>
+                <br><br>
+                <button type="submit">Call Now</button>
+            </form>
+        </body>
+    </html>
+    """
+
 @app.get("/")
 async def root():
-    return {"status": "online", "message": "Voice‑to‑Voice RAG with Nepali TTS"}
+    return {"status": "online", "message": "Voice‑to‑Voice RAG with Outbound Support"}
 
-# ------------------------------------------------------------------
-# Run with uvicorn (if executed directly)
-# ------------------------------------------------------------------
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
