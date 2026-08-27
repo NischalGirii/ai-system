@@ -4,6 +4,7 @@ import asyncio
 import uvicorn
 import edge_tts
 import traceback
+from typing import Optional
 from fastapi import FastAPI, Form, Request
 from fastapi.responses import Response, HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -71,9 +72,9 @@ async def synthesize_nepali_speech(text: str) -> str:
         traceback.print_exc()
         raise
 
-async def process_nepali_query(user_text: str) -> str:
+async def process_nepali_query(user_text: str, call_sid: Optional[str] = None) -> str:
     try:
-        return await asyncio.to_thread(answer_user_query, user_text)
+        return await asyncio.to_thread(answer_user_query, user_text, call_sid)
     except Exception as e:
         print(f"❌ RAG error: {e}")
         traceback.print_exc()
@@ -90,7 +91,8 @@ async def handle_incoming_call(request: Request):
     try:
         response.play(GREETING_MP3)
     except:
-        response.say("नमस्ते! स्वचालित सूचना सेवामा स्वागत छ। तपाईं के जानकारी चाहनुहुन्छ?")
+        # Updated greeting for disaster management context
+        response.say("विपद् व्यवस्थापन सूचना सेवामा स्वागत छ। तपाईं कस्तो जानकारी चाहनुहुन्छ?")
     
     # Redirect to /listen with first=1 (we'll ignore this flag now, but it's harmless)
     response.redirect(f"{LISTEN_URL}?first=1", method="POST")
@@ -130,13 +132,16 @@ async def listen_for_speech(request: Request):
 @app.api_route("/process_speech", methods=["GET", "POST"])
 async def process_speech(request: Request, SpeechResult: str = Form(None), Digits: str = Form(None)):
     print("🔔 /process_speech called")
+    # Extract CallSid for session management
+    form = await request.form()
+    call_sid = form.get("CallSid", None)
     user_input = SpeechResult or Digits
     print(f"User input: {user_input}")
 
     response = VoiceResponse()
     try:
         if user_input:
-            answer_text = await process_nepali_query(user_input)
+            answer_text = await process_nepali_query(user_input, call_sid)
             print(f"RAG answer: {answer_text}")
 
             if answer_text.strip() == "धन्यवाद। फेरि भेटौँला।":
