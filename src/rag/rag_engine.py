@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 import time
 import pickle
 import logging
@@ -36,6 +37,14 @@ from groq import Groq
 PERSIST_DIR = "data/chroma_db"
 BM25_PKL_PATH = "data/bm25_retriever.pkl"
 EMBEDDING_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+
+# Curated emergency/flood information document.
+# Copy the supplied TXT into this path, or override it with EMERGENCY_DOC_PATH.
+EMERGENCY_DOC_PATH = os.getenv(
+    "EMERGENCY_DOC_PATH",
+    "data/rasuwa_nuwakot_dhading_chitwan_flood_emergency_nepali.txt"
+)
+EMERGENCY_CONTEXT_MAX_CHARS = 12000
 
 GROQ_MODEL = "openai/gpt-oss-20b"
 GROQ_REASONING_EFFORT = "low"
@@ -100,6 +109,177 @@ def clean_bm25_query(query: str) -> str:
     q = normalize_text(query)
     cleaned_tokens = [t.lower().strip(".,!?;:'\"()[]{}") for t in q.split() if t and t not in QUESTION_WORDS]
     return " ".join(cleaned_tokens) or q
+
+# =========================================================
+# EMERGENCY FLOOD KNOWLEDGE
+# =========================================================
+_emergency_doc_cache = None
+_emergency_doc_mtime = None
+_emergency_lock = threading.Lock()
+
+EMERGENCY_INTENT_KEYWORDS = [
+    "आपतकालीन", "आपत्कालीन", "emergency",
+    "बाढी", "flood", "उद्धार", "rescue",
+    "राहत", "हराएको", "missing",
+    "फोन", "नम्बर", "सम्पर्क",
+    "सुरक्षित", "के गर्ने", "के गर्नुपर्छ",
+    "रसुवा", "नुवाकोट", "धादिङ", "चितवन",
+    "पहिरो", "डुबान", "अस्पताल", "एम्बुलेन्स"
+]
+
+
+def is_emergency_query(query: str) -> bool:
+    q = normalize_text(query).lower()
+    return any(term.lower() in q for term in EMERGENCY_INTENT_KEYWORDS)
+
+
+def load_emergency_document() -> str:
+    """Load the curated emergency TXT and cache it until the file changes."""
+    global _emergency_doc_cache, _emergency_doc_mtime
+
+    try:
+        mtime = os.path.getmtime(EMERGENCY_DOC_PATH)
+    except OSError:
+        if _emergency_doc_cache is None:
+            print(f"[EMERGENCY DOC] Not found: {EMERGENCY_DOC_PATH}")
+        return _emergency_doc_cache or ""
+
+    with _emergency_lock:
+        if _emergency_doc_cache is None or _emergency_doc_mtime != mtime:
+            try:
+                _emergency_doc_cache = Path(EMERGENCY_DOC_PATH).read_text(
+                    encoding="utf-8"
+                )
+                _emergency_doc_mtime = mtime
+                print(f"[EMERGENCY DOC] Loaded: {EMERGENCY_DOC_PATH}")
+            except Exception as exc:
+                print(f"[EMERGENCY DOC ERROR] {exc}")
+                return ""
+    return _emergency_doc_cache or ""
+
+
+def _extract_emergency_sections(query: str, document: str) -> str:
+    """
+    Select the relevant sections from the emergency TXT.
+    Emergency content is deliberately kept separate from the generic RAG store.
+    """
+    if not document:
+        return ""
+
+    q = normalize_text(query).lower()
+
+    rules = [
+        (
+            ["रसुवा", "rasuwa"],
+            ["३. रसुवा जिल्लाका आपतकालीन सम्पर्क"]
+        ),
+        (
+            ["नुवाकोट", "nuwakot"],
+            ["४. नुवाकोट जिल्लाका सम्पर्क"]
+        ),
+        (
+            ["धादिङ", "dhading"],
+            ["५. धादिङ जिल्लाका आपतकालीन सम्पर्क"]
+        ),
+        (
+            ["चितवन", "chitwan"],
+            ["६. चितवन जिल्लाका आपतकालीन सम्पर्क"]
+        ),
+        (
+            ["नम्बर", "फोन", "सम्पर्क", "emergency", "आपतकालीन", "आपत्कालीन",
+             "प्रहरी", "एम्बुलेन्स"],
+            [
+                "२. अत्यावश्यक राष्ट्रिय नम्बरहरू",
+                "३. रसुवा जिल्लाका आपतकालीन सम्पर्क",
+                "४. नुवाकोट जिल्लाका सम्पर्क",
+                "५. धादिङ जिल्लाका आपतकालीन सम्पर्क",
+                "६. चितवन जिल्लाका आपतकालीन सम्पर्क",
+                "१६. तत्काल प्रयोग गर्नुपर्ने नम्बरहरू — छिटो सूची"
+            ]
+        ),
+        (
+            ["उद्धार", "rescue", "फसेको", "थुनिएको", "के गर्ने", "सुरक्षित"],
+            [
+                "१. सबैभन्दा पहिले गर्नुपर्ने काम",
+                "७. उद्धार माग्दा के जानकारी दिने?"
+            ]
+        ),
+        (
+            ["हराएको", "missing"],
+            ["८. हराएको व्यक्ति सम्बन्धी जानकारी"]
+        ),
+        (
+            ["राहत", "खाना", "पानी", "आश्रय", "जीवन"],
+            [
+                "९. राहत र जीवनरक्षाका प्राथमिकता",
+                "१४. राहत शिविर वा सुरक्षित स्थानमा पुगेपछि"
+            ]
+        ),
+        (
+            ["घाइते", "स्वास्थ्य", "ambulance", "एम्बुलेन्स", "चोट", "अस्पताल"],
+            ["१०. स्वास्थ्य तथा घाइते व्यक्तिका लागि"]
+        ),
+        (
+            ["सडक", "बाटो", "पुल", "bridge", "road"],
+            ["११. सडक तथा पुलको अवस्था"]
+        ),
+        (
+            ["मोबाइल", "network", "सञ्चार", "sms", "चार्ज"],
+            ["१२. सञ्चार बन्द वा मोबाइल नेटवर्क कमजोर हुँदा"]
+        ),
+        (
+            ["बालबालिका", "वृद्ध", "अशक्त", "बच्चा"],
+            ["१३. बालबालिका, वृद्ध र अशक्त व्यक्तिको विशेष ध्यान"]
+        ),
+        (
+            ["बाढीपछि", "पहिरो", "बिजुली", "दूषित", "जोखिम"],
+            ["१५. बाढीपछिको थप जोखिम"]
+        ),
+    ]
+
+    titles = []
+    for terms, section_titles in rules:
+        if any(term.lower() in q for term in terms):
+            titles.extend(section_titles)
+
+    # Broad emergency query -> most useful immediate guidance + phone numbers.
+    if not titles:
+        titles = [
+            "१. सबैभन्दा पहिले गर्नुपर्ने काम",
+            "२. अत्यावश्यक राष्ट्रिय नम्बरहरू",
+            "१६. तत्काल प्रयोग गर्नुपर्ने नम्बरहरू — छिटो सूची"
+        ]
+
+    # De-duplicate while preserving order.
+    titles = list(dict.fromkeys(titles))
+
+    matches = list(
+        re.finditer(
+            r"(?m)^={4,}\n(\d+\. .*?)\n={4,}$",
+            document
+        )
+    )
+
+    selected = []
+    for i, match in enumerate(matches):
+        title = match.group(1).strip()
+        start = match.end()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(document)
+        body = document[start:end].strip()
+
+        if title in titles:
+            selected.append(f"{title}\n{body}")
+
+    result = "\n\n---\n\n".join(selected)
+    return result[:EMERGENCY_CONTEXT_MAX_CHARS]
+
+
+def build_emergency_context(query: str) -> str:
+    document = load_emergency_document()
+    if not document:
+        return ""
+    return _extract_emergency_sections(query, document)
+
 
 # =========================================================
 # TOPIC DEFINITIONS
@@ -358,6 +538,13 @@ def init_pipeline():
     if _pipeline_loaded:
         return
 
+    # Emergency document is independent of ChromaDB/BM25.
+    emergency_doc = load_emergency_document()
+    if emergency_doc:
+        print(f"[EMERGENCY DOC] Ready ({len(emergency_doc)} chars)")
+    else:
+        print(f"[EMERGENCY DOC WARNING] Missing: {EMERGENCY_DOC_PATH}")
+
     try:
         _embeddings = HuggingFaceEmbeddings(
             model_name=EMBEDDING_MODEL,
@@ -508,8 +695,13 @@ def answer_user_query(query: str, call_sid: Optional[str] = None) -> str:
     if is_exit_intent(query):
         return GOODBYE_RESPONSE
 
+    # ---- EMERGENCY QUERIES TAKE PRIORITY OVER GENERIC TOPICS ----
+    # This prevents a flood victim asking "रसुवामा उद्धारको नम्बर के हो?"
+    # from receiving only the generic disaster-contact list.
+    emergency_query = is_emergency_query(query)
+
     # ---- HANDLE TOPIC-BASED CONVERSATION ----
-    if call_sid:
+    if call_sid and not emergency_query:
         topic_answer = handle_topic_query(query, call_sid)
         if topic_answer is not None:
             return pronounce_english_terms(topic_answer)
@@ -520,32 +712,65 @@ def answer_user_query(query: str, call_sid: Optional[str] = None) -> str:
         answer = TOPIC_SUMMARY + "। तपाईं प्रकार, चरण, सीप, चुनौती, सम्पर्क, वा भविष्यको बारेमा सोध्न सक्नुहुन्छ।"
         return pronounce_english_terms(answer)
 
-    # ---- RAG PIPELINE ----
+    # ---- EMERGENCY KNOWLEDGE + RAG PIPELINE ----
+    # For flood/emergency questions, the curated emergency TXT is always
+    # considered first. General ChromaDB/BM25 retrieval is still used as a
+    # secondary source when available.
+    emergency_context = (
+        build_emergency_context(query)
+        if is_emergency_query(query)
+        else ""
+    )
+
     print("[RAG] Proceeding with retrieval and LLM.")
     vector_store, bm25, groq = load_rag_pipeline()
-    if not vector_store or not bm25:
-        return DATABASE_ERROR
+
+    documents = []
+    rag_context = ""
+
+    if vector_store and bm25:
+        documents = retrieve_documents(query)
+        if documents:
+            rag_context = build_context(documents, query=query)
+
     if not groq:
         return GROQ_UNAVAILABLE
 
-    documents = retrieve_documents(query)
-    if not documents:
+    if not emergency_context and not rag_context:
+        if not vector_store or not bm25:
+            return DATABASE_ERROR
         return NO_INFO
 
-    context = build_context(documents, query=query)
-    if not context:
-        return NO_INFO
+    if emergency_context and rag_context:
+        context = (
+            "=== प्राथमिक आपतकालीन स्रोत ===\n"
+            + emergency_context
+            + "\n\n=== अन्य RAG स्रोत ===\n"
+            + rag_context
+        )
+    else:
+        context = emergency_context or rag_context
 
-    print(f"[CONTEXT PREVIEW] {context[:500]}...")
+    print(f"[CONTEXT PREVIEW] {context[:800]}...")
 
-    # ---- Enhanced system prompt for comparisons ----
+    # Emergency-aware system prompt.
     system_prompt = f"""
 तपाईं "विपद् व्यवस्थापन सूचना सेवा" का नेपाली voice assistant हुनुहुन्छ।
-तपाईंको काम: प्रयोगकर्ताको प्रश्नको छोटो, स्पष्ट र सटीक उत्तर दिनुहोस्।
-उत्तर दिनको लागि **केवल** दिइएको सन्दर्भ प्रयोग गर्नुहोस्।
-यदि प्रश्नले दुई वा बढी वस्तुहरूको तुलना माग्छ भने, तिनीहरूको भिन्नता र समानता स्पष्ट रूपमा देखाउनुहोस्।
-यदि सन्दर्भमा उत्तर छैन भने, "माफ गर्नुहोस्, यस विषयमा जानकारी छैन" भन्नुहोस्।
-प्रयोगकर्तालाई "तपाईं" भनेर सम्बोधन गर्नुहोस् र "म", "मलाई" जस्ता शब्दहरू प्रयोग नगर्नुहोस्।
+तपाईंको काम: प्रयोगकर्ताको प्रश्नको छोटो, स्पष्ट, सटीक र कार्यमुखी उत्तर दिनुहोस्।
+
+महत्त्वपूर्ण नियमहरू:
+१. आपतकालीन, बाढी, उद्धार, राहत, सम्पर्क नम्बर, सुरक्षित स्थान,
+   हराएको व्यक्ति, स्वास्थ्य वा सडकसम्बन्धी प्रश्नमा "प्राथमिक आपतकालीन स्रोत"
+   लाई सबैभन्दा पहिले प्रयोग गर्नुहोस्।
+२. प्राथमिक आपतकालीन स्रोतमा दिएको फोन नम्बर, जिल्ला, कार्यालय वा अन्य
+   तथ्यलाई जस्ताको तस्तै प्रयोग गर्नुहोस्। अनुमान गरेर नयाँ नम्बर नबनाउनुहोस्।
+३. प्राथमिक स्रोतमा उत्तर नभए "अन्य RAG स्रोत" मात्र प्रयोग गर्नुहोस्।
+४. स्रोतमा उत्तर छैन भने "माफ गर्नुहोस्, यस विषयमा उपलब्ध जानकारी छैन।" भन्नुहोस्।
+५. आपतकालीन प्रश्नमा पहिले आवश्यक फोन नम्बर वा तत्काल गर्नुपर्ने काम बताउनुहोस्।
+६. उत्तर छोटो राख्नुहोस्; voice assistant भएकाले अनावश्यक व्याख्या नगर्नुहोस्।
+७. प्रयोगकर्तालाई "तपाईं" भनेर सम्बोधन गर्नुहोस्।
+८. स्रोतबाहिरको तथ्य, अनुमान वा अपुष्ट सूचना नजोड्नुहोस्।
+९. दुई वा बढी विकल्प तुलना गर्नुपरे स्रोतमा उपलब्ध विवरणका आधारमा स्पष्ट तुलना गर्नुहोस्।
 
 सन्दर्भ:
 {context}
